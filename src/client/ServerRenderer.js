@@ -251,6 +251,12 @@ class ServerRenderer {
         },
       };
 
+      // Debug: Log effects being sent to server
+      console.log("Sending effects to server:", {
+        effectsKeys: Object.keys(this.app.effects),
+        effects: this.app.effects,
+      });
+
       // Start render job
       const response = await fetch(`${this.serverUrl}/render/start`, {
         method: "POST",

@@ -69,6 +69,14 @@ class VideoProcessor {
     const extension = format === "webm" ? "webm" : "mp4";
     const outputPath = path.join(this.outputDir, `${jobId}.${extension}`);
 
+    // Debug: Log complete job data to verify effects are received
+    console.log("Processing video with job data:", {
+      jobId,
+      effectsKeys: Object.keys(job.effects || {}),
+      effects: job.effects,
+      renderSettings: job.renderSettings,
+    });
+
     try {
       progressCallback({ percent: 0, message: "Analyzing video..." });
 
@@ -334,7 +342,7 @@ class VideoProcessor {
   }
 
   /**
-   * Render karaoke text effects on canvas
+   * Render karaoke text effects on canvas (matching client-side implementation)
    */
   renderKaraokeText(
     ctx,
@@ -344,42 +352,341 @@ class VideoProcessor {
     canvasWidth,
     canvasHeight
   ) {
-    // Setup text rendering
-    ctx.font = `${effects.fontWeight || "bold"} ${effects.fontSize || 60}px ${
-      effects.fontFamily || "Arial"
-    }`;
+    // Setup text rendering with custom font support (matching client logic)
+    const fontFamily =
+      effects.fontFamily === "custom" && effects.customFontName
+        ? effects.customFontName
+        : effects.fontFamily || "Arial";
+
+    ctx.font = `${effects.fontWeight || "bold"} ${
+      effects.fontSize || 60
+    }px ${fontFamily}`;
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
 
-    // Apply text effects
+    // Debug: Log effects to ensure they're received correctly
+    console.log("Server rendering with effects:", {
+      fontFamily: effects.fontFamily,
+      customFontName: effects.customFontName,
+      fontSize: effects.fontSize,
+      karaokeMode: effects.karaokeMode,
+      glowIntensity: effects.glowIntensity,
+      autoBreak: effects.autoBreak,
+      maxLineWidth: effects.maxLineWidth,
+    });
+
+    // Apply base text effects
     this.applyTextEffects(ctx, effects);
+
+    // Break words into lines if auto-break is enabled
+    const lines = effects.autoBreak
+      ? this.breakIntoLines(words, ctx, effects)
+      : [words];
 
     // Calculate position
     const centerX = effects.positionX || canvasWidth / 2;
     const baseY = effects.positionY || canvasHeight - 150;
 
-    // Calculate total width for centering
-    const wordWidths = words.map((word) => ctx.measureText(word.word).width);
-    const totalSpacing = (words.length - 1) * (effects.wordSpacing || 10);
-    const totalWidth =
-      wordWidths.reduce((sum, width) => sum + width, 0) + totalSpacing;
+    // Calculate total height for centering
+    const lineHeight = (effects.fontSize || 60) * (effects.lineHeight || 1.2);
+    const totalHeight = lines.length * lineHeight;
+    let currentY = baseY - totalHeight / 2 + lineHeight / 2;
 
-    let currentX = centerX - totalWidth / 2;
-
-    // Render each word
-    words.forEach((word, index) => {
-      const progress = this.getWordProgress(
-        word,
-        currentTime,
-        effects.animationSpeed || 1
+    // Render each line
+    lines.forEach((lineWords) => {
+      // Calculate total width for centering this line
+      const wordWidths = lineWords.map(
+        (word) => ctx.measureText(word.word).width
       );
-      const color = this.getWordColor(progress, effects);
+      const totalSpacing = (lineWords.length - 1) * (effects.wordSpacing || 10);
+      const totalWidth =
+        wordWidths.reduce((sum, width) => sum + width, 0) + totalSpacing;
 
-      ctx.fillStyle = color;
-      ctx.fillText(word.word, currentX, baseY);
+      let currentX = centerX - totalWidth / 2;
 
-      currentX += wordWidths[index] + (effects.wordSpacing || 10);
+      // Render each word in the line
+      lineWords.forEach((word, index) => {
+        const progress = this.getWordProgress(
+          word,
+          currentTime,
+          effects.animationSpeed || 1
+        );
+
+        // Render word with effects based on karaoke mode
+        this.renderWordWithEffects(
+          ctx,
+          word,
+          currentX,
+          currentY,
+          progress,
+          effects
+        );
+
+        currentX += wordWidths[index] + (effects.wordSpacing || 10);
+      });
+
+      currentY += lineHeight;
     });
+  }
+
+  /**
+   * Break words into lines based on maxLineWidth
+   */
+  breakIntoLines(words, ctx, effects) {
+    if (!effects.autoBreak || !effects.maxLineWidth) {
+      return [words];
+    }
+
+    const lines = [];
+    let currentLine = [];
+    let currentWidth = 0;
+    const wordSpacing = effects.wordSpacing || 10;
+
+    words.forEach((word) => {
+      const wordWidth = ctx.measureText(word.word).width;
+      const spaceWidth = currentLine.length > 0 ? wordSpacing : 0;
+
+      if (
+        currentWidth + spaceWidth + wordWidth > effects.maxLineWidth &&
+        currentLine.length > 0
+      ) {
+        // Start new line
+        lines.push(currentLine);
+        currentLine = [word];
+        currentWidth = wordWidth;
+      } else {
+        // Add to current line
+        currentLine.push(word);
+        currentWidth += spaceWidth + wordWidth;
+      }
+    });
+
+    if (currentLine.length > 0) {
+      lines.push(currentLine);
+    }
+
+    return lines.length > 0 ? lines : [words];
+  }
+
+  /**
+   * Render a single word with all effects
+   */
+  renderWordWithEffects(ctx, word, x, y, progress, effects) {
+    const karaokeMode = effects.karaokeMode || "highlight";
+
+    switch (karaokeMode) {
+      case "highlight":
+        this.renderHighlightWord(ctx, word, x, y, progress, effects);
+        break;
+      case "gradient":
+        this.renderGradientWord(ctx, word, x, y, progress, effects);
+        break;
+      case "fill":
+        this.renderFillWord(ctx, word, x, y, progress, effects);
+        break;
+      case "bounce":
+        this.renderBounceWord(ctx, word, x, y, progress, effects);
+        break;
+      default:
+        this.renderHighlightWord(ctx, word, x, y, progress, effects);
+    }
+  }
+
+  /**
+   * Render word with highlight effect
+   */
+  renderHighlightWord(ctx, word, x, y, progress, effects) {
+    const isHighlighted = progress > 0 && progress < 1;
+    const color = isHighlighted ? effects.highlightColor : effects.primaryColor;
+
+    // Add glow for highlighted words
+    if (isHighlighted && effects.glowIntensity > 0) {
+      this.renderTextWithGlow(
+        ctx,
+        word.word,
+        x,
+        y,
+        color,
+        effects.glowIntensity,
+        effects.highlightColor
+      );
+    } else {
+      this.renderTextWithEffects(ctx, word.word, x, y, color, effects);
+    }
+  }
+
+  /**
+   * Render word with gradient effect
+   */
+  renderGradientWord(ctx, word, x, y, progress, effects) {
+    // Interpolate between primary and highlight colors
+    const primaryColor = this.hexToRgb(effects.primaryColor || "#ffffff");
+    const highlightColor = this.hexToRgb(effects.highlightColor || "#ffff00");
+
+    const r = Math.round(
+      primaryColor.r + (highlightColor.r - primaryColor.r) * progress
+    );
+    const g = Math.round(
+      primaryColor.g + (highlightColor.g - primaryColor.g) * progress
+    );
+    const b = Math.round(
+      primaryColor.b + (highlightColor.b - primaryColor.b) * progress
+    );
+
+    const color = `rgb(${r}, ${g}, ${b})`;
+
+    // Add glow based on progress
+    if (progress > 0 && effects.glowIntensity > 0) {
+      this.renderTextWithGlow(
+        ctx,
+        word.word,
+        x,
+        y,
+        color,
+        effects.glowIntensity * progress,
+        color
+      );
+    } else {
+      this.renderTextWithEffects(ctx, word.word, x, y, color, effects);
+    }
+  }
+
+  /**
+   * Render word with fill effect
+   */
+  renderFillWord(ctx, word, x, y, progress, effects) {
+    // Draw unfilled part
+    this.renderTextWithEffects(
+      ctx,
+      word.word,
+      x,
+      y,
+      effects.primaryColor,
+      effects
+    );
+
+    if (progress > 0) {
+      // Draw filled part with clipping
+      ctx.save();
+
+      const wordWidth = ctx.measureText(word.word).width;
+      const fillWidth = wordWidth * progress;
+
+      ctx.beginPath();
+      ctx.rect(
+        x,
+        y - (effects.fontSize || 60) / 2,
+        fillWidth,
+        effects.fontSize || 60
+      );
+      ctx.clip();
+
+      // Add glow for filled part
+      if (effects.glowIntensity > 0) {
+        this.renderTextWithGlow(
+          ctx,
+          word.word,
+          x,
+          y,
+          effects.highlightColor,
+          effects.glowIntensity,
+          effects.highlightColor
+        );
+      } else {
+        this.renderTextWithEffects(
+          ctx,
+          word.word,
+          x,
+          y,
+          effects.highlightColor,
+          effects
+        );
+      }
+
+      ctx.restore();
+    }
+  }
+
+  /**
+   * Render word with bounce effect
+   */
+  renderBounceWord(ctx, word, x, y, progress, effects) {
+    ctx.save();
+
+    // Calculate bounce offset
+    const bounceHeight =
+      (effects.bounceHeight || 10) * Math.sin(progress * Math.PI);
+    const bounceY = y - bounceHeight;
+
+    const color = progress > 0 ? effects.highlightColor : effects.primaryColor;
+
+    // Add glow for bouncing words
+    if (progress > 0 && effects.glowIntensity > 0) {
+      this.renderTextWithGlow(
+        ctx,
+        word.word,
+        x,
+        bounceY,
+        color,
+        effects.glowIntensity,
+        effects.highlightColor
+      );
+    } else {
+      this.renderTextWithEffects(ctx, word.word, x, bounceY, color, effects);
+    }
+
+    ctx.restore();
+  }
+
+  /**
+   * Render text with glow effect
+   */
+  renderTextWithGlow(ctx, text, x, y, color, glowIntensity, glowColor) {
+    const originalShadowBlur = ctx.shadowBlur;
+    const originalShadowColor = ctx.shadowColor;
+
+    ctx.shadowColor = glowColor || color;
+    ctx.shadowBlur = glowIntensity;
+
+    // Multiple glow layers for intensity
+    for (let i = 0; i < 3; i++) {
+      ctx.fillStyle = color;
+      ctx.fillText(text, x, y);
+      if (ctx.strokeStyle && ctx.lineWidth > 0) {
+        ctx.strokeText(text, x, y);
+      }
+    }
+
+    // Restore original shadow settings
+    ctx.shadowBlur = originalShadowBlur;
+    ctx.shadowColor = originalShadowColor;
+  }
+
+  /**
+   * Render text with basic effects
+   */
+  renderTextWithEffects(ctx, text, x, y, color, effects) {
+    ctx.fillStyle = color;
+    ctx.fillText(text, x, y);
+
+    // Apply border if enabled
+    if (effects.enableBorder && ctx.lineWidth > 0) {
+      ctx.strokeText(text, x, y);
+    }
+  }
+
+  /**
+   * Convert hex color to RGB
+   */
+  hexToRgb(hex) {
+    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return result
+      ? {
+          r: parseInt(result[1], 16),
+          g: parseInt(result[2], 16),
+          b: parseInt(result[3], 16),
+        }
+      : { r: 255, g: 255, b: 255 };
   }
 
   /**
@@ -416,27 +723,6 @@ class VideoProcessor {
     const duration = wordData.end_time - wordData.start_time;
     const elapsed = currentTime - wordData.start_time;
     return Math.min(1, (elapsed / duration) * animationSpeed);
-  }
-
-  /**
-   * Get word color based on karaoke mode and progress
-   */
-  getWordColor(progress, effects) {
-    const primaryColor = effects.primaryColor || "#ffffff";
-    const highlightColor = effects.highlightColor || "#ffff00";
-
-    switch (effects.karaokeMode) {
-      case "highlight":
-        const isHighlighted = progress > 0 && progress < 1;
-        return isHighlighted ? highlightColor : primaryColor;
-
-      case "gradient":
-        // Simple gradient approximation
-        return progress > 0.5 ? highlightColor : primaryColor;
-
-      default:
-        return primaryColor;
-    }
   }
 
   /**

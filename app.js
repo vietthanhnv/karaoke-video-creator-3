@@ -356,6 +356,34 @@ class KaraokeApp {
     }
   }
 
+  /**
+   * Show current effects settings for debugging
+   */
+  showCurrentEffects() {
+    console.log("Current client effects:", this.effects);
+
+    const effectsInfo = {
+      Font: `${this.effects.fontFamily} ${this.effects.fontSize}px ${this.effects.fontWeight}`,
+      "Custom Font": this.effects.customFontName || "None",
+      Colors: `Primary: ${this.effects.primaryColor}, Highlight: ${this.effects.highlightColor}`,
+      "Karaoke Mode": this.effects.karaokeMode,
+      "Glow Intensity": this.effects.glowIntensity,
+      "Auto Break": this.effects.autoBreak,
+      "Max Line Width": this.effects.maxLineWidth,
+      "Word Spacing": this.effects.wordSpacing,
+      Position: `X: ${this.effects.positionX}, Y: ${this.effects.positionY}`,
+      Shadow: this.effects.enableShadow
+        ? `${this.effects.shadowBlur}px ${this.effects.shadowColor}`
+        : "Disabled",
+      Border: this.effects.enableBorder
+        ? `${this.effects.borderWidth}px ${this.effects.borderColor}`
+        : "Disabled",
+    };
+
+    console.table(effectsInfo);
+    alert("Effects logged to console. Check browser console for details.");
+  }
+
   async loadVideo(event) {
     const file = event.target.files[0];
     if (file) {
