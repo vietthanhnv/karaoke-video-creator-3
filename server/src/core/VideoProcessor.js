@@ -1,0 +1,547 @@
+/**
+ * Video Processor - Handles video analysis and rendering with file-based streaming
+ */
+
+const { createCanvas, loadImage, registerFont } = require("canvas");
+const ffmpeg = require("fluent-ffmpeg");
+const ffmpegStatic = require("ffmpeg-static");
+const fs = require("fs-extra");
+const path = require("path");
+const { v4: uuidv4 } = require("uuid");
+
+// Set FFmpeg path
+ffmpeg.setFfmpegPath(ffmpegStatic);
+
+class VideoProcessor {
+  constructor() {
+    this.tempDir = path.join(__dirname, "../../temp");
+    this.outputDir = path.join(__dirname, "../../downloads");
+
+    // Ensure directories exist
+    fs.ensureDirSync(this.tempDir);
+    fs.ensureDirSync(this.outputDir);
+  }
+
+  /**
+   * Analyze video file to get metadata
+   */
+  async analyzeVideo(videoPath) {
+    return new Promise((resolve, reject) => {
+      ffmpeg.ffprobe(videoPath, (err, metadata) => {
+        if (err) {
+          reject(new Error(`Video analysis failed: ${err.message}`));
+          return;
+        }
+
+        const videoStream = metadata.streams.find(
+          (s) => s.codec_type === "video"
+        );
+        const audioStream = metadata.streams.find(
+          (s) => s.codec_type === "audio"
+        );
+
+        if (!videoStream) {
+          reject(new Error("No video stream found"));
+          return;
+        }
+
+        resolve({
+          duration: parseFloat(metadata.format.duration),
+          width: videoStream.width,
+          height: videoStream.height,
+          frameRate: this.parseFrameRate(videoStream.r_frame_rate),
+          hasAudio: !!audioStream,
+          format: metadata.format.format_name,
+          size: metadata.format.size,
+        });
+      });
+    });
+  }
+
+  /**
+   * Process video with karaoke effects using file-based streaming
+   */
+  async processVideo(job, progressCallback) {
+    const jobId = job.id;
+    const videoPath = path.join(__dirname, "../../uploads", job.videoId);
+    const outputPath = path.join(this.outputDir, `${jobId}.mp4`);
+
+    try {
+      progressCallback({ percent: 0, message: "Analyzing video..." });
+
+      // Get video info
+      const videoInfo = await this.analyzeVideo(videoPath);
+      const { width, height, duration, frameRate } = videoInfo;
+
+      // Calculate render parameters
+      const renderWidth = this.getRenderWidth(
+        job.renderSettings.resolution,
+        width
+      );
+      const renderHeight = this.getRenderHeight(
+        job.renderSettings.resolution,
+        height
+      );
+      const targetFrameRate = job.renderSettings.frameRate || frameRate;
+      const totalFrames = Math.ceil(duration * targetFrameRate);
+
+      progressCallback({
+        percent: 5,
+        message: `Processing ${totalFrames} frames...`,
+      });
+
+      // Create temporary directory for this job
+      const jobTempDir = path.join(this.tempDir, jobId);
+      fs.ensureDirSync(jobTempDir);
+
+      try {
+        // Extract frames and render karaoke effects
+        await this.renderFramesWithEffects(
+          videoPath,
+          jobTempDir,
+          job,
+          renderWidth,
+          renderHeight,
+          targetFrameRate,
+          totalFrames,
+          progressCallback
+        );
+
+        progressCallback({ percent: 85, message: "Encoding final video..." });
+
+        // Combine frames back to video
+        await this.combineFramesToVideo(
+          jobTempDir,
+          videoPath,
+          outputPath,
+          targetFrameRate,
+          job.renderSettings,
+          progressCallback
+        );
+
+        progressCallback({ percent: 100, message: "Render completed!" });
+
+        return outputPath;
+      } finally {
+        // Cleanup temporary files
+        await fs.remove(jobTempDir);
+      }
+    } catch (error) {
+      console.error(`Video processing failed for job ${jobId}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Render frames with karaoke effects using file-based processing
+   */
+  async renderFramesWithEffects(
+    videoPath,
+    tempDir,
+    job,
+    width,
+    height,
+    frameRate,
+    totalFrames,
+    progressCallback
+  ) {
+    const frameInterval = 1 / frameRate;
+    const batchSize = 100; // Process 100 frames at a time to manage memory
+
+    // Extract video frames in batches
+    for (
+      let batchStart = 0;
+      batchStart < totalFrames;
+      batchStart += batchSize
+    ) {
+      const batchEnd = Math.min(batchStart + batchSize, totalFrames);
+      const batchFrames = batchEnd - batchStart;
+
+      // Extract frames for this batch
+      const batchDir = path.join(tempDir, `batch_${batchStart}`);
+      fs.ensureDirSync(batchDir);
+
+      await this.extractFrameBatch(
+        videoPath,
+        batchDir,
+        batchStart,
+        batchFrames,
+        frameRate
+      );
+
+      // Verify frames were extracted
+      const extractedFiles = await fs.readdir(batchDir);
+      console.log(
+        `Extracted ${extractedFiles.length} files in batch ${batchStart}`
+      );
+
+      // Process each frame in the batch
+      for (let i = 0; i < batchFrames; i++) {
+        const frameIndex = batchStart + i;
+        const timestamp = frameIndex * frameInterval;
+
+        const inputFramePath = path.join(
+          batchDir,
+          `frame_${String(i).padStart(6, "0")}.png`
+        );
+        const outputFramePath = path.join(
+          tempDir,
+          `output_${String(frameIndex).padStart(6, "0")}.png`
+        );
+
+        // Check if input frame exists
+        if (!(await fs.pathExists(inputFramePath))) {
+          console.warn(`Frame ${inputFramePath} not found, skipping...`);
+          // Create a black frame as fallback
+          await this.createBlackFrame(outputFramePath, width, height);
+          continue;
+        }
+
+        // Render karaoke effects on this frame
+        await this.renderKaraokeFrame(
+          inputFramePath,
+          outputFramePath,
+          timestamp,
+          job.effects,
+          job.subtitles,
+          job.wordSegments,
+          width,
+          height
+        );
+
+        // Update progress
+        const progress = 5 + ((frameIndex + 1) / totalFrames) * 75;
+        progressCallback({
+          percent: progress,
+          message: `Processing frame ${frameIndex + 1}/${totalFrames}`,
+        });
+      }
+
+      // Clean up batch directory to save space
+      await fs.remove(batchDir);
+
+      // Force garbage collection if available
+      if (global.gc) {
+        global.gc();
+      }
+    }
+  }
+
+  /**
+   * Extract a batch of frames from video
+   */
+  async extractFrameBatch(
+    videoPath,
+    outputDir,
+    startFrame,
+    frameCount,
+    frameRate
+  ) {
+    return new Promise((resolve, reject) => {
+      const startTime = startFrame / frameRate;
+      const duration = frameCount / frameRate;
+
+      // Ensure output directory exists
+      fs.ensureDirSync(outputDir);
+
+      console.log(
+        `Extracting ${frameCount} frames starting at ${startTime}s to ${outputDir}`
+      );
+
+      ffmpeg(videoPath)
+        .seekInput(startTime)
+        .inputOptions(["-t", duration.toString()]) // Use input option for duration
+        .fps(frameRate)
+        .size("1920x1080")
+        .output(path.join(outputDir, "frame_%06d.png"))
+        .outputOptions(["-start_number", "0"]) // Start numbering from 0
+        .on("start", (commandLine) => {
+          console.log("FFmpeg command:", commandLine);
+        })
+        .on("progress", (progress) => {
+          if (progress.frames) {
+            console.log(`Frame extraction progress: ${progress.frames} frames`);
+          }
+        })
+        .on("end", () => {
+          console.log(
+            `Frame extraction completed for batch starting at frame ${startFrame}`
+          );
+          resolve();
+        })
+        .on("error", (error) => {
+          console.error(`Frame extraction failed:`, error);
+          reject(error);
+        })
+        .run();
+    });
+  }
+
+  /**
+   * Render karaoke effects on a single frame
+   */
+  async renderKaraokeFrame(
+    inputPath,
+    outputPath,
+    timestamp,
+    effects,
+    subtitles,
+    wordSegments,
+    width,
+    height
+  ) {
+    try {
+      // Load the video frame
+      const image = await loadImage(inputPath);
+
+      // Create canvas
+      const canvas = createCanvas(width, height);
+      const ctx = canvas.getContext("2d");
+
+      // Draw video frame
+      ctx.drawImage(image, 0, 0, width, height);
+
+      // Find active subtitle
+      const activeSubtitle = subtitles.find(
+        (sub) => timestamp >= sub.start_time && timestamp <= sub.end_time
+      );
+
+      if (activeSubtitle) {
+        // Get words for this subtitle
+        const words = wordSegments.filter(
+          (word) =>
+            word.start_time >= activeSubtitle.start_time &&
+            word.end_time <= activeSubtitle.end_time
+        );
+
+        if (words.length > 0) {
+          // Render karaoke text effects
+          this.renderKaraokeText(ctx, words, timestamp, effects, width, height);
+        }
+      }
+
+      // Save the rendered frame
+      const buffer = canvas.toBuffer("image/png");
+      await fs.writeFile(outputPath, buffer);
+    } catch (error) {
+      console.error(`Error rendering frame at ${timestamp}s:`, error);
+      // Copy original frame if rendering fails
+      await fs.copy(inputPath, outputPath);
+    }
+  }
+
+  /**
+   * Render karaoke text effects on canvas
+   */
+  renderKaraokeText(
+    ctx,
+    words,
+    currentTime,
+    effects,
+    canvasWidth,
+    canvasHeight
+  ) {
+    // Setup text rendering
+    ctx.font = `${effects.fontWeight || "bold"} ${effects.fontSize || 60}px ${
+      effects.fontFamily || "Arial"
+    }`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+
+    // Apply text effects
+    this.applyTextEffects(ctx, effects);
+
+    // Calculate position
+    const centerX = effects.positionX || canvasWidth / 2;
+    const baseY = effects.positionY || canvasHeight - 150;
+
+    // Calculate total width for centering
+    const wordWidths = words.map((word) => ctx.measureText(word.word).width);
+    const totalSpacing = (words.length - 1) * (effects.wordSpacing || 10);
+    const totalWidth =
+      wordWidths.reduce((sum, width) => sum + width, 0) + totalSpacing;
+
+    let currentX = centerX - totalWidth / 2;
+
+    // Render each word
+    words.forEach((word, index) => {
+      const progress = this.getWordProgress(
+        word,
+        currentTime,
+        effects.animationSpeed || 1
+      );
+      const color = this.getWordColor(progress, effects);
+
+      ctx.fillStyle = color;
+      ctx.fillText(word.word, currentX, baseY);
+
+      currentX += wordWidths[index] + (effects.wordSpacing || 10);
+    });
+  }
+
+  /**
+   * Apply text effects to canvas context
+   */
+  applyTextEffects(ctx, effects) {
+    // Reset effects
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetX = 0;
+    ctx.shadowOffsetY = 0;
+
+    // Apply shadow if enabled
+    if (effects.enableShadow) {
+      ctx.shadowColor = effects.shadowColor || "#000000";
+      ctx.shadowBlur = effects.shadowBlur || 4;
+      ctx.shadowOffsetX = effects.shadowOffsetX || 2;
+      ctx.shadowOffsetY = effects.shadowOffsetY || 2;
+    }
+
+    // Apply border if enabled
+    if (effects.enableBorder) {
+      ctx.strokeStyle = effects.borderColor || "#000000";
+      ctx.lineWidth = effects.borderWidth || 2;
+    }
+  }
+
+  /**
+   * Get word progress for animation
+   */
+  getWordProgress(wordData, currentTime, animationSpeed) {
+    if (currentTime < wordData.start_time) return 0;
+    if (currentTime > wordData.end_time) return 1;
+
+    const duration = wordData.end_time - wordData.start_time;
+    const elapsed = currentTime - wordData.start_time;
+    return Math.min(1, (elapsed / duration) * animationSpeed);
+  }
+
+  /**
+   * Get word color based on karaoke mode and progress
+   */
+  getWordColor(progress, effects) {
+    const primaryColor = effects.primaryColor || "#ffffff";
+    const highlightColor = effects.highlightColor || "#ffff00";
+
+    switch (effects.karaokeMode) {
+      case "highlight":
+        const isHighlighted = progress > 0 && progress < 1;
+        return isHighlighted ? highlightColor : primaryColor;
+
+      case "gradient":
+        // Simple gradient approximation
+        return progress > 0.5 ? highlightColor : primaryColor;
+
+      default:
+        return primaryColor;
+    }
+  }
+
+  /**
+   * Combine rendered frames back to video
+   */
+  async combineFramesToVideo(
+    framesDir,
+    originalVideoPath,
+    outputPath,
+    frameRate,
+    renderSettings,
+    progressCallback
+  ) {
+    return new Promise((resolve, reject) => {
+      const inputPattern = path.join(framesDir, "output_%06d.png");
+
+      let command = ffmpeg()
+        .input(inputPattern)
+        .inputFPS(frameRate)
+        .videoCodec("libx264")
+        .fps(frameRate);
+
+      // Add original audio if available
+      command = command.input(originalVideoPath);
+
+      // Set quality based on settings
+      const qualitySettings = {
+        high: ["-crf", "18"],
+        medium: ["-crf", "23"],
+        low: ["-crf", "28"],
+      };
+
+      const quality = renderSettings.quality || "medium";
+      command = command.outputOptions(qualitySettings[quality]);
+
+      // Map video and audio streams
+      command = command
+        .outputOptions(["-map", "0:v:0", "-map", "1:a:0?"])
+        .output(outputPath);
+
+      command
+        .on("progress", (progress) => {
+          if (progress.percent) {
+            const percent = 85 + progress.percent * 0.15;
+            progressCallback({
+              percent,
+              message: `Encoding video: ${Math.round(progress.percent)}%`,
+            });
+          }
+        })
+        .on("end", resolve)
+        .on("error", reject)
+        .run();
+    });
+  }
+
+  /**
+   * Get render width based on resolution setting
+   */
+  getRenderWidth(resolution, originalWidth) {
+    const resolutions = {
+      "720p": 1280,
+      "1080p": 1920,
+      "4k": 3840,
+    };
+    return resolutions[resolution] || originalWidth;
+  }
+
+  /**
+   * Get render height based on resolution setting
+   */
+  getRenderHeight(resolution, originalHeight) {
+    const resolutions = {
+      "720p": 720,
+      "1080p": 1080,
+      "4k": 2160,
+    };
+    return resolutions[resolution] || originalHeight;
+  }
+
+  /**
+   * Create a black frame as fallback
+   */
+  async createBlackFrame(outputPath, width, height) {
+    const canvas = createCanvas(width, height);
+    const ctx = canvas.getContext("2d");
+
+    // Fill with black
+    ctx.fillStyle = "#000000";
+    ctx.fillRect(0, 0, width, height);
+
+    // Save the black frame
+    const buffer = canvas.toBuffer("image/png");
+    await fs.writeFile(outputPath, buffer);
+  }
+
+  /**
+   * Parse frame rate from FFmpeg format
+   */
+  parseFrameRate(frameRateStr) {
+    if (!frameRateStr) return 30;
+
+    const parts = frameRateStr.split("/");
+    if (parts.length === 2) {
+      return parseFloat(parts[0]) / parseFloat(parts[1]);
+    }
+    return parseFloat(frameRateStr) || 30;
+  }
+}
+
+module.exports = VideoProcessor;

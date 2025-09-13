@@ -1,0 +1,344 @@
+/**
+ * Karaoke Video Renderer Server
+ * Handles video processing with file-based streaming to prevent memory issues
+ */
+
+const express = require("express");
+const cors = require("cors");
+const WebSocket = require("ws");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs-extra");
+const { v4: uuidv4 } = require("uuid");
+
+const VideoProcessor = require("./src/core/VideoProcessor");
+const RenderJobManager = require("./src/core/RenderJobManager");
+const FileManager = require("./src/core/FileManager");
+
+class KaraokeRenderServer {
+  constructor() {
+    this.app = express();
+    this.port = process.env.PORT || 3001;
+    this.videoProcessor = new VideoProcessor();
+    this.jobManager = new RenderJobManager();
+    this.fileManager = new FileManager();
+
+    this.setupMiddleware();
+    this.setupRoutes();
+    this.setupWebSocket();
+  }
+
+  setupMiddleware() {
+    // CORS configuration
+    this.app.use(
+      cors({
+        origin: ["http://localhost:3000", "http://127.0.0.1:3000"],
+        credentials: true,
+      })
+    );
+
+    this.app.use(express.json({ limit: "50mb" }));
+    this.app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+
+    // File upload configuration
+    const storage = multer.diskStorage({
+      destination: (req, file, cb) => {
+        const uploadDir = path.join(__dirname, "uploads");
+        fs.ensureDirSync(uploadDir);
+        cb(null, uploadDir);
+      },
+      filename: (req, file, cb) => {
+        const uniqueName = `${uuidv4()}-${file.originalname}`;
+        cb(null, uniqueName);
+      },
+    });
+
+    this.upload = multer({
+      storage,
+      limits: { fileSize: 500 * 1024 * 1024 }, // 500MB limit
+    });
+
+    // Serve static files
+    this.app.use(
+      "/downloads",
+      express.static(path.join(__dirname, "downloads"))
+    );
+
+    // Serve client application files from parent directory
+    this.app.use(express.static(path.join(__dirname, "..")));
+  }
+
+  setupRoutes() {
+    // Health check
+    this.app.get("/health", (req, res) => {
+      res.json({
+        status: "healthy",
+        timestamp: new Date().toISOString(),
+        memory: process.memoryUsage(),
+        activeJobs: this.jobManager.getActiveJobCount(),
+      });
+    });
+
+    // Upload video file
+    this.app.post(
+      "/upload/video",
+      this.upload.single("video"),
+      async (req, res) => {
+        try {
+          if (!req.file) {
+            return res.status(400).json({ error: "No video file uploaded" });
+          }
+
+          const videoInfo = await this.videoProcessor.analyzeVideo(
+            req.file.path
+          );
+
+          res.json({
+            success: true,
+            videoId: req.file.filename,
+            videoInfo,
+            message: "Video uploaded successfully",
+          });
+        } catch (error) {
+          console.error("Video upload error:", error);
+          res.status(500).json({ error: error.message });
+        }
+      }
+    );
+
+    // Start render job
+    this.app.post("/render/start", async (req, res) => {
+      try {
+        const { videoId, subtitles, wordSegments, effects, renderSettings } =
+          req.body;
+
+        if (!videoId || !subtitles || !wordSegments) {
+          return res.status(400).json({ error: "Missing required parameters" });
+        }
+
+        const jobId = await this.jobManager.createJob({
+          videoId,
+          subtitles,
+          wordSegments,
+          effects,
+          renderSettings,
+        });
+
+        // Start processing asynchronously
+        this.processRenderJob(jobId);
+
+        res.json({
+          success: true,
+          jobId,
+          message: "Render job started",
+        });
+      } catch (error) {
+        console.error("Render start error:", error);
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Get job status
+    this.app.get("/render/status/:jobId", (req, res) => {
+      try {
+        const { jobId } = req.params;
+        const status = this.jobManager.getJobStatus(jobId);
+
+        if (!status) {
+          return res.status(404).json({ error: "Job not found" });
+        }
+
+        res.json(status);
+      } catch (error) {
+        console.error("Status check error:", error);
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Download rendered video
+    this.app.get("/download/:jobId", (req, res) => {
+      try {
+        const { jobId } = req.params;
+        const job = this.jobManager.getJob(jobId);
+
+        if (!job || job.status !== "completed") {
+          return res
+            .status(404)
+            .json({ error: "Video not ready for download" });
+        }
+
+        const filePath = job.outputPath;
+        if (!fs.existsSync(filePath)) {
+          return res.status(404).json({ error: "Output file not found" });
+        }
+
+        res.download(filePath, `karaoke-video-${jobId}.mp4`, (err) => {
+          if (err) {
+            console.error("Download error:", err);
+          }
+        });
+      } catch (error) {
+        console.error("Download error:", error);
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Cancel render job
+    this.app.post("/render/cancel/:jobId", (req, res) => {
+      try {
+        const { jobId } = req.params;
+        const success = this.jobManager.cancelJob(jobId);
+
+        res.json({
+          success,
+          message: success
+            ? "Job cancelled"
+            : "Job not found or cannot be cancelled",
+        });
+      } catch (error) {
+        console.error("Cancel job error:", error);
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // List active jobs
+    this.app.get("/jobs", (req, res) => {
+      try {
+        const jobs = this.jobManager.getAllJobs();
+        res.json({ jobs });
+      } catch (error) {
+        console.error("List jobs error:", error);
+        res.status(500).json({ error: error.message });
+      }
+    });
+
+    // Cleanup old files
+    this.app.post("/cleanup", async (req, res) => {
+      try {
+        const cleaned = await this.fileManager.cleanupOldFiles();
+        res.json({ success: true, cleaned });
+      } catch (error) {
+        console.error("Cleanup error:", error);
+        res.status(500).json({ error: error.message });
+      }
+    });
+  }
+
+  setupWebSocket() {
+    this.wss = new WebSocket.Server({ port: 3005 });
+
+    this.wss.on("connection", (ws) => {
+      console.log("WebSocket client connected");
+
+      ws.on("message", (message) => {
+        try {
+          const data = JSON.parse(message);
+          this.handleWebSocketMessage(ws, data);
+        } catch (error) {
+          console.error("WebSocket message error:", error);
+        }
+      });
+
+      ws.on("close", () => {
+        console.log("WebSocket client disconnected");
+      });
+    });
+
+    console.log("WebSocket server listening on port 3005");
+  }
+
+  handleWebSocketMessage(ws, data) {
+    switch (data.type) {
+      case "subscribe":
+        // Subscribe to job updates
+        ws.jobId = data.jobId;
+        break;
+      case "ping":
+        ws.send(JSON.stringify({ type: "pong" }));
+        break;
+    }
+  }
+
+  broadcastJobUpdate(jobId, update) {
+    this.wss.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN && client.jobId === jobId) {
+        client.send(
+          JSON.stringify({
+            type: "jobUpdate",
+            jobId,
+            ...update,
+          })
+        );
+      }
+    });
+  }
+
+  async processRenderJob(jobId) {
+    try {
+      const job = this.jobManager.getJob(jobId);
+      if (!job) {
+        throw new Error("Job not found");
+      }
+
+      // Update job status
+      this.jobManager.updateJobStatus(
+        jobId,
+        "processing",
+        "Starting render process..."
+      );
+      this.broadcastJobUpdate(jobId, {
+        status: "processing",
+        message: "Starting render process...",
+      });
+
+      // Process video with file-based streaming
+      const outputPath = await this.videoProcessor.processVideo(
+        job,
+        (progress) => {
+          this.jobManager.updateJobProgress(
+            jobId,
+            progress.percent,
+            progress.message
+          );
+          this.broadcastJobUpdate(jobId, progress);
+        }
+      );
+
+      // Mark job as completed
+      this.jobManager.completeJob(jobId, outputPath);
+      this.broadcastJobUpdate(jobId, {
+        status: "completed",
+        message: "Render completed successfully",
+        downloadUrl: `/download/${jobId}`,
+      });
+    } catch (error) {
+      console.error(`Job ${jobId} failed:`, error);
+      this.jobManager.failJob(jobId, error.message);
+      this.broadcastJobUpdate(jobId, {
+        status: "failed",
+        message: error.message,
+      });
+    }
+  }
+
+  start() {
+    this.app.listen(this.port, () => {
+      console.log(`🎤 Karaoke Render Server running on port ${this.port}`);
+      console.log(`📊 Health check: http://localhost:${this.port}/health`);
+      console.log(`🔌 WebSocket server: ws://localhost:3005`);
+    });
+
+    // Graceful shutdown
+    process.on("SIGTERM", () => {
+      console.log("Shutting down server...");
+      this.jobManager.cancelAllJobs();
+      process.exit(0);
+    });
+  }
+}
+
+// Start server
+const server = new KaraokeRenderServer();
+server.start();
+
+module.exports = KaraokeRenderServer;
