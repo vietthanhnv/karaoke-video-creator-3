@@ -975,6 +975,11 @@ class KaraokeApp {
     const progressFill = document.getElementById("progressFill");
     const progressText = document.getElementById("progressText");
 
+    if (!progressFill || !progressText) {
+      alert("Progress bar elements not found. Please refresh the page.");
+      return;
+    }
+
     // Get render settings
     const resolution = document.getElementById("renderResolution").value;
     const frameRate = parseInt(
@@ -989,6 +994,10 @@ class KaraokeApp {
     renderBtn.textContent = "🎬 Rendering...";
     progressDiv.style.display = "block";
 
+    // Initialize progress display
+    progressFill.style.width = "0%";
+    progressText.textContent = "Initializing render...";
+
     try {
       // Choose rendering method based on mode
       switch (renderMode) {
@@ -999,8 +1008,11 @@ class KaraokeApp {
             quality,
             format,
             (progress, status) => {
-              progressFill.style.width = progress + "%";
-              progressText.textContent = status;
+              // Update progress bar
+              if (progressFill && progressText) {
+                progressFill.style.width = progress + "%";
+                progressText.textContent = status;
+              }
             }
           );
           break;
@@ -1097,10 +1109,13 @@ class KaraokeApp {
         alert("Render failed: " + error.message);
       }
     } finally {
-      // Reset UI
-      renderBtn.disabled = false;
-      renderBtn.textContent = "🎬 Start Render";
-      progressDiv.style.display = "none";
+      // Only reset UI for non-server renders
+      // Server renders will reset UI when they complete via the progress callback
+      if (renderMode !== "server") {
+        renderBtn.disabled = false;
+        renderBtn.textContent = "🎬 Start Render";
+        progressDiv.style.display = "none";
+      }
     }
   }
 

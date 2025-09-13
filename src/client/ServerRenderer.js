@@ -98,6 +98,11 @@ class ServerRenderer {
       this.downloadFile(downloadUrl, `karaoke-video-${this.currentJobId}.mp4`);
     }
 
+    // Reset UI after a short delay to show completion
+    setTimeout(() => {
+      this.resetRenderUI();
+    }, 3000);
+
     this.currentJobId = null;
   }
 
@@ -107,7 +112,25 @@ class ServerRenderer {
   handleRenderError(data) {
     console.error("Server render failed:", data.message);
     alert(`Render failed: ${data.message}`);
+    this.resetRenderUI();
     this.currentJobId = null;
+  }
+
+  /**
+   * Reset the render UI elements
+   */
+  resetRenderUI() {
+    const renderBtn = document.getElementById("renderBtn");
+    const progressDiv = document.getElementById("renderProgress");
+
+    if (renderBtn) {
+      renderBtn.disabled = false;
+      renderBtn.textContent = "🎬 Start Render";
+    }
+
+    if (progressDiv) {
+      progressDiv.style.display = "none";
+    }
   }
 
   /**
@@ -183,7 +206,28 @@ class ServerRenderer {
     format,
     progressCallback
   ) {
-    this.progressCallback = progressCallback;
+    // Create a robust progress callback wrapper
+    this.progressCallback = (percent, message) => {
+      // Ensure we're in the main thread context
+      if (typeof requestAnimationFrame !== "undefined") {
+        requestAnimationFrame(() => {
+          try {
+            progressCallback(percent, message);
+          } catch (error) {
+            console.error("Progress callback error:", error);
+          }
+        });
+      } else {
+        // Fallback to setTimeout
+        setTimeout(() => {
+          try {
+            progressCallback(percent, message);
+          } catch (error) {
+            console.error("Progress callback error:", error);
+          }
+        }, 0);
+      }
+    };
 
     try {
       // Ensure WebSocket connection
@@ -191,7 +235,7 @@ class ServerRenderer {
         await this.initializeWebSocket();
       }
 
-      progressCallback(0, "Starting server render...");
+      this.progressCallback(0, "Starting server render...");
 
       // Prepare render data
       const renderData = {
