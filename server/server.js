@@ -29,16 +29,16 @@ class KaraokeRenderServer {
   }
 
   setupMiddleware() {
-    // CORS configuration
+    // CORS configuration - Allow all origins for development
     this.app.use(
       cors({
-        origin: ["http://localhost:3000", "http://127.0.0.1:3000"],
+        origin: true, // Allow all origins
         credentials: true,
       })
     );
 
-    this.app.use(express.json({ limit: "50mb" }));
-    this.app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+    this.app.use(express.json({ limit: "20gb" }));
+    this.app.use(express.urlencoded({ extended: true, limit: "20gb" }));
 
     // File upload configuration
     const storage = multer.diskStorage({
@@ -55,7 +55,10 @@ class KaraokeRenderServer {
 
     this.upload = multer({
       storage,
-      limits: { fileSize: 500 * 1024 * 1024 }, // 500MB limit
+      limits: {
+        fileSize: 20 * 1024 * 1024 * 1024, // 20GB limit
+        fieldSize: 20 * 1024 * 1024 * 1024, // 20GB field limit
+      },
     });
 
     // Serve static files
@@ -82,7 +85,24 @@ class KaraokeRenderServer {
     // Upload video file
     this.app.post(
       "/upload/video",
-      this.upload.single("video"),
+      (req, res, next) => {
+        this.upload.single("video")(req, res, (err) => {
+          if (err) {
+            console.error("Multer upload error:", err);
+            if (err.code === "LIMIT_FILE_SIZE") {
+              return res.status(413).json({
+                error: "File too large. Maximum size is 2GB.",
+                code: "FILE_TOO_LARGE",
+              });
+            }
+            return res.status(400).json({
+              error: `Upload failed: ${err.message}`,
+              code: err.code || "UPLOAD_ERROR",
+            });
+          }
+          next();
+        });
+      },
       async (req, res) => {
         try {
           if (!req.file) {

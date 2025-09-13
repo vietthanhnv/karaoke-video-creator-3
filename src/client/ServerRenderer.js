@@ -137,6 +137,20 @@ class ServerRenderer {
         body: formData,
       });
 
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+
+        if (response.status === 413 || errorData.code === "FILE_TOO_LARGE") {
+          throw new Error(
+            "Video file is too large. Maximum size is 2GB. Please use a smaller file or compress your video."
+          );
+        }
+
+        throw new Error(
+          errorData.error || `Upload failed with status ${response.status}`
+        );
+      }
+
       const data = await response.json();
 
       if (!data.success) {
@@ -146,6 +160,14 @@ class ServerRenderer {
       return data;
     } catch (error) {
       console.error("Video upload failed:", error);
+
+      // Provide user-friendly error messages
+      if (error.message.includes("fetch")) {
+        throw new Error(
+          "Cannot connect to server. Please make sure the server is running."
+        );
+      }
+
       throw error;
     }
   }

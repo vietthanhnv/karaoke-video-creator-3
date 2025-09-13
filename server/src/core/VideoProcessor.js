@@ -64,7 +64,10 @@ class VideoProcessor {
   async processVideo(job, progressCallback) {
     const jobId = job.id;
     const videoPath = path.join(__dirname, "../../uploads", job.videoId);
-    const outputPath = path.join(this.outputDir, `${jobId}.mp4`);
+    // Determine output format and extension
+    const format = job.renderSettings.format || "mp4";
+    const extension = format === "webm" ? "webm" : "mp4";
+    const outputPath = path.join(this.outputDir, `${jobId}.${extension}`);
 
     try {
       progressCallback({ percent: 0, message: "Analyzing video..." });
@@ -459,15 +462,58 @@ class VideoProcessor {
       // Add original audio if available
       command = command.input(originalVideoPath);
 
-      // Set quality based on settings
+      // Set quality and Windows compatibility settings
       const qualitySettings = {
-        high: ["-crf", "18"],
-        medium: ["-crf", "23"],
-        low: ["-crf", "28"],
+        high: [
+          "-crf",
+          "18",
+          "-preset",
+          "medium",
+          "-profile:v",
+          "high",
+          "-level",
+          "4.0",
+          "-pix_fmt",
+          "yuv420p",
+          "-movflags",
+          "+faststart",
+        ],
+        medium: [
+          "-crf",
+          "23",
+          "-preset",
+          "medium",
+          "-profile:v",
+          "high",
+          "-level",
+          "4.0",
+          "-pix_fmt",
+          "yuv420p",
+          "-movflags",
+          "+faststart",
+        ],
+        low: [
+          "-crf",
+          "28",
+          "-preset",
+          "fast",
+          "-profile:v",
+          "main",
+          "-level",
+          "3.1",
+          "-pix_fmt",
+          "yuv420p",
+          "-movflags",
+          "+faststart",
+        ],
       };
 
+      // Get optimal encoding settings for Windows compatibility
+      const format = renderSettings.format || "mp4";
       const quality = renderSettings.quality || "medium";
-      command = command.outputOptions(qualitySettings[quality]);
+      const encodingSettings = this.getEncodingSettings(format, quality);
+
+      command = command.outputOptions(encodingSettings);
 
       // Map video and audio streams
       command = command
@@ -488,6 +534,116 @@ class VideoProcessor {
         .on("error", reject)
         .run();
     });
+  }
+
+  /**
+   * Get optimal encoding settings for different formats
+   */
+  getEncodingSettings(format, quality) {
+    const settings = {
+      mp4: {
+        high: [
+          "-c:v",
+          "libx264",
+          "-crf",
+          "18",
+          "-preset",
+          "medium",
+          "-profile:v",
+          "high",
+          "-level",
+          "4.0",
+          "-pix_fmt",
+          "yuv420p",
+          "-c:a",
+          "aac",
+          "-b:a",
+          "192k",
+          "-movflags",
+          "+faststart",
+        ],
+        medium: [
+          "-c:v",
+          "libx264",
+          "-crf",
+          "23",
+          "-preset",
+          "medium",
+          "-profile:v",
+          "high",
+          "-level",
+          "4.0",
+          "-pix_fmt",
+          "yuv420p",
+          "-c:a",
+          "aac",
+          "-b:a",
+          "128k",
+          "-movflags",
+          "+faststart",
+        ],
+        low: [
+          "-c:v",
+          "libx264",
+          "-crf",
+          "28",
+          "-preset",
+          "fast",
+          "-profile:v",
+          "main",
+          "-level",
+          "3.1",
+          "-pix_fmt",
+          "yuv420p",
+          "-c:a",
+          "aac",
+          "-b:a",
+          "96k",
+          "-movflags",
+          "+faststart",
+        ],
+      },
+      webm: {
+        high: [
+          "-c:v",
+          "libvpx-vp9",
+          "-crf",
+          "30",
+          "-b:v",
+          "0",
+          "-c:a",
+          "libopus",
+          "-b:a",
+          "128k",
+        ],
+        medium: [
+          "-c:v",
+          "libvpx-vp9",
+          "-crf",
+          "35",
+          "-b:v",
+          "0",
+          "-c:a",
+          "libopus",
+          "-b:a",
+          "96k",
+        ],
+        low: [
+          "-c:v",
+          "libvpx-vp9",
+          "-crf",
+          "40",
+          "-b:v",
+          "0",
+          "-c:a",
+          "libopus",
+          "-b:a",
+          "64k",
+        ],
+      },
+    };
+
+    return settings[format]?.[quality] || settings.mp4.medium;
   }
 
   /**

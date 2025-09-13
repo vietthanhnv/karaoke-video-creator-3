@@ -58,6 +58,10 @@ class KaraokeApp {
     // Server-based rendering
     this.uploadedVideoId = null;
     this.isServerAvailable = false;
+    this.currentVideoFile = null;
+
+    // Status display
+    this.statusDisplay = document.getElementById("statusDisplay");
 
     this.initializeEventListeners();
     this.setupCanvas();
@@ -274,9 +278,89 @@ class KaraokeApp {
     }
   }
 
+  /**
+   * Show status message to user
+   */
+  showStatus(message, type = "info", duration = 5000, showRetryButton = false) {
+    if (!this.statusDisplay) return;
+
+    this.statusDisplay.innerHTML = message;
+    this.statusDisplay.className = `status-display ${type}`;
+    this.statusDisplay.style.display = "block";
+
+    // Add retry button for server upload errors
+    if (showRetryButton && this.currentVideoFile) {
+      const retryButton = document.createElement("button");
+      retryButton.textContent = "Retry Upload";
+      retryButton.style.marginLeft = "10px";
+      retryButton.style.padding = "5px 10px";
+      retryButton.style.border = "1px solid currentColor";
+      retryButton.style.background = "transparent";
+      retryButton.style.color = "inherit";
+      retryButton.style.borderRadius = "4px";
+      retryButton.style.cursor = "pointer";
+      retryButton.onclick = () => this.retryVideoUpload();
+      this.statusDisplay.appendChild(retryButton);
+    }
+
+    // Auto-hide after duration (except for errors)
+    if (type !== "error" && duration > 0) {
+      setTimeout(() => {
+        this.statusDisplay.style.display = "none";
+      }, duration);
+    }
+  }
+
+  /**
+   * Hide status message
+   */
+  hideStatus() {
+    if (this.statusDisplay) {
+      this.statusDisplay.style.display = "none";
+    }
+  }
+
+  /**
+   * Retry uploading video to server
+   */
+  async retryVideoUpload() {
+    if (!this.currentVideoFile) {
+      this.showStatus(
+        "No video file to upload. Please load a video first.",
+        "error"
+      );
+      return false;
+    }
+
+    if (!this.isServerAvailable || !this.serverRenderer) {
+      this.showStatus(
+        "Server not available. Please check if the server is running.",
+        "error"
+      );
+      return false;
+    }
+
+    try {
+      this.showStatus("Retrying video upload to server...", "info");
+      const uploadResult = await this.serverRenderer.uploadVideo(
+        this.currentVideoFile
+      );
+      this.uploadedVideoId = uploadResult.videoId;
+      console.log("Video re-uploaded to server:", uploadResult);
+      this.showStatus("Video uploaded to server successfully", "success");
+      return true;
+    } catch (error) {
+      console.error("Failed to re-upload video to server:", error);
+      this.showStatus(`Failed to upload video: ${error.message}`, "error", 0);
+      return false;
+    }
+  }
+
   async loadVideo(event) {
     const file = event.target.files[0];
     if (file) {
+      // Store the file for potential re-upload
+      this.currentVideoFile = file;
       console.log(
         "Loading video file:",
         file.name,
@@ -306,13 +390,26 @@ class KaraokeApp {
       if (this.isServerAvailable && this.serverRenderer) {
         try {
           console.log("Uploading video to server...");
+          this.showStatus("Uploading video to server...", "info");
           const uploadResult = await this.serverRenderer.uploadVideo(file);
           this.uploadedVideoId = uploadResult.videoId;
           console.log("Video uploaded to server:", uploadResult);
+          this.showStatus("Video uploaded to server successfully", "success");
         } catch (error) {
           console.error("Failed to upload video to server:", error);
           this.uploadedVideoId = null;
+          this.showStatus(
+            "Failed to upload video to server. Server rendering unavailable.",
+            "error",
+            0,
+            true
+          );
         }
+      } else {
+        this.showStatus(
+          "Server not available. Only client-side rendering available.",
+          "warning"
+        );
       }
     }
   }
@@ -2830,7 +2927,37 @@ You can now share your karaoke video or convert it to other formats if needed!`)
     }
 
     if (!this.uploadedVideoId) {
-      throw new Error("Video not uploaded to server. Please reload the video.");
+      // Try to re-upload the video if we have it
+      if (this.video && this.video.src && this.currentVideoFile) {
+        try {
+          progressCallback(0, "Re-uploading video to server...");
+          const uploadResult = await this.serverRenderer.uploadVideo(
+            this.currentVideoFile
+          );
+          this.uploadedVideoId = uploadResult.videoId;
+          console.log("Video re-uploaded to server:", uploadResult);
+        } catch (error) {
+          this.showStatus(
+            "Failed to upload video to server. Please try again.",
+            "error",
+            0,
+            true
+          );
+          throw new Error(
+            "Video upload failed. Please try again or reload the video file."
+          );
+        }
+      } else {
+        this.showStatus(
+          "Video not uploaded to server. Please reload the video file.",
+          "error",
+          0,
+          true
+        );
+        throw new Error(
+          "Video not uploaded to server. Please reload the video file."
+        );
+      }
     }
 
     progressCallback(0, "Starting server-based rendering...");

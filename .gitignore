@@ -106,3 +106,6 @@ ehthumbs.db
 Thumbs.db
 
 node_modules
+server/downloads
+server/data
+server/uploads
