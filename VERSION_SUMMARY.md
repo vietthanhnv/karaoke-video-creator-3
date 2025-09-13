@@ -1,6 +1,6 @@
-# Karaoke Video Renderer - Key Function Version
+# Karaoke Video Renderer - Server Render Version
 
-## 🎯 Branch: `key_function`
+## 🎯 Branch: `server_render`
 
 This branch contains the enhanced karaoke video renderer with full server-client synchronization and advanced effects support.
 
