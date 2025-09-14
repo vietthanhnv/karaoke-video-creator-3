@@ -122,6 +122,21 @@ class KaraokeApp {
       const customGroup = document.getElementById("customPositionGroup");
       customGroup.style.display =
         e.target.value === "custom" ? "block" : "none";
+
+      // Update position coordinates based on preset
+      if (e.target.value !== "custom") {
+        this.updateTextPositionPreset(e.target.value);
+      } else {
+        // When switching to custom mode, sync vertical position slider with current positionY
+        const canvasHeight = 1080;
+        const currentPercentage = Math.round(
+          (this.effects.positionY / canvasHeight) * 100
+        );
+        this.effects.verticalPosition = currentPercentage;
+        document.getElementById("verticalPosition").value = currentPercentage;
+        document.getElementById("verticalValue").textContent =
+          currentPercentage + "%";
+      }
     });
 
     document
@@ -130,6 +145,15 @@ class KaraokeApp {
         this.effects.verticalPosition = parseInt(e.target.value);
         document.getElementById("verticalValue").textContent =
           e.target.value + "%";
+
+        // Convert percentage to actual Y coordinate when in custom mode
+        if (this.effects.textPosition === "custom") {
+          const canvasHeight = 1080; // Default canvas height
+          this.effects.positionY = Math.round(
+            (this.effects.verticalPosition / 100) * canvasHeight
+          );
+          document.getElementById("positionY").value = this.effects.positionY;
+        }
       });
 
     document.getElementById("karaokeMode").addEventListener("change", (e) => {
@@ -183,6 +207,17 @@ class KaraokeApp {
 
     document.getElementById("positionY").addEventListener("input", (e) => {
       this.effects.positionY = parseInt(e.target.value);
+
+      // Update vertical position slider when in custom mode
+      if (this.effects.textPosition === "custom") {
+        const canvasHeight = 1080;
+        const percentage = Math.round(
+          (this.effects.positionY / canvasHeight) * 100
+        );
+        this.effects.verticalPosition = percentage;
+        document.getElementById("verticalPosition").value = percentage;
+        document.getElementById("verticalValue").textContent = percentage + "%";
+      }
     });
 
     document.getElementById("centerPosition").addEventListener("click", () => {
@@ -659,6 +694,28 @@ class KaraokeApp {
   formatTime(seconds) {
     // Keep decimal seconds for easier editing
     return seconds.toFixed(3);
+  }
+
+  updateTextPositionPreset(position) {
+    // Update position coordinates based on preset
+    switch (position) {
+      case "bottom":
+        this.effects.positionX = 960; // Center X for 1920px width
+        this.effects.positionY = 930; // Bottom area for 1080px height
+        break;
+      case "center":
+        this.effects.positionX = 960; // Center X for 1920px width
+        this.effects.positionY = 540; // Center Y for 1080px height
+        break;
+      case "top":
+        this.effects.positionX = 960; // Center X for 1920px width
+        this.effects.positionY = 150; // Top area for 1080px height
+        break;
+    }
+
+    // Update the UI inputs to reflect the new values
+    document.getElementById("positionX").value = this.effects.positionX;
+    document.getElementById("positionY").value = this.effects.positionY;
   }
 
   startRenderLoop() {
