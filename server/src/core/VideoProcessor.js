@@ -357,8 +357,6 @@ class VideoProcessor {
           duration.toString(),
           "-threads",
           "0", // Use all available CPU threads
-          "-preset",
-          "ultrafast", // Fastest extraction preset
         ])
         .fps(frameRate)
         .size("1920x1080")
@@ -370,6 +368,8 @@ class VideoProcessor {
           "2", // High quality but fast PNG compression
           "-pix_fmt",
           "rgb24", // Optimize pixel format for PNG
+          "-preset",
+          "ultrafast", // Fastest extraction preset
         ])
         .on("start", (commandLine) => {
           console.log("FFmpeg command:", commandLine);

@@ -1247,42 +1247,6 @@ class KaraokeApp {
             }
           );
           break;
-        case "ultra-fast":
-          await this.renderVideoUltraFast(
-            resolution,
-            frameRate,
-            quality,
-            format,
-            (progress, status) => {
-              progressFill.style.width = progress + "%";
-              progressText.textContent = status;
-            }
-          );
-          break;
-        case "parallel":
-          await this.renderVideoParallel(
-            resolution,
-            frameRate,
-            quality,
-            format,
-            (progress, status) => {
-              progressFill.style.width = progress + "%";
-              progressText.textContent = status;
-            }
-          );
-          break;
-        case "fast":
-          await this.renderVideo(
-            resolution,
-            frameRate,
-            quality,
-            format,
-            (progress, status) => {
-              progressFill.style.width = progress + "%";
-              progressText.textContent = status;
-            }
-          );
-          break;
         default: // realtime
           await this.renderVideoRealtime(
             resolution,
@@ -1307,29 +1271,17 @@ class KaraokeApp {
           "Your browser doesn't support direct video recording. Trying alternative method..."
         );
         try {
-          if (renderMode === "fast") {
-            await this.renderVideoFallback(
-              resolution,
-              frameRate,
-              quality,
-              format,
-              (progress, status) => {
-                progressFill.style.width = progress + "%";
-                progressText.textContent = status;
-              }
-            );
-          } else {
-            await this.renderVideoRealtimeFallback(
-              resolution,
-              frameRate,
-              quality,
-              format,
-              (progress, status) => {
-                progressFill.style.width = progress + "%";
-                progressText.textContent = status;
-              }
-            );
-          }
+          // Use realtime fallback for all client-side rendering
+          await this.renderVideoRealtimeFallback(
+            resolution,
+            frameRate,
+            quality,
+            format,
+            (progress, status) => {
+              progressFill.style.width = progress + "%";
+              progressText.textContent = status;
+            }
+          );
         } catch (fallbackError) {
           console.error("Fallback render error:", fallbackError);
           alert(
