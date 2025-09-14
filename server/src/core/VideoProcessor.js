@@ -8,6 +8,7 @@ const ffmpegStatic = require("ffmpeg-static");
 const fs = require("fs-extra");
 const path = require("path");
 const { v4: uuidv4 } = require("uuid");
+const UnifiedTextRenderer = require("../../../src/core/UnifiedTextRenderer");
 
 // Set FFmpeg path
 ffmpeg.setFfmpegPath(ffmpegStatic);
@@ -16,10 +17,90 @@ class VideoProcessor {
   constructor() {
     this.tempDir = path.join(__dirname, "../../temp");
     this.outputDir = path.join(__dirname, "../../downloads");
+    this.fontsDir = path.join(__dirname, "../../fonts");
+    this.registeredFonts = new Map(); // Track registered fonts
 
     // Ensure directories exist
     fs.ensureDirSync(this.tempDir);
     fs.ensureDirSync(this.outputDir);
+    fs.ensureDirSync(this.fontsDir);
+
+    // Register default system fonts
+    this.registerDefaultFonts();
+  }
+
+  /**
+   * Register default system fonts for server rendering
+   */
+  registerDefaultFonts() {
+    // Try to register common system fonts
+    const systemFonts = [
+      {
+        name: "Arial",
+        paths: [
+          "C:/Windows/Fonts/arial.ttf",
+          "/System/Library/Fonts/Arial.ttf",
+          "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ],
+      },
+      {
+        name: "Times New Roman",
+        paths: [
+          "C:/Windows/Fonts/times.ttf",
+          "/System/Library/Fonts/Times.ttc",
+        ],
+      },
+      {
+        name: "Helvetica",
+        paths: [
+          "/System/Library/Fonts/Helvetica.ttc",
+          "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        ],
+      },
+      {
+        name: "Impact",
+        paths: [
+          "C:/Windows/Fonts/impact.ttf",
+          "/System/Library/Fonts/Impact.ttf",
+        ],
+      },
+    ];
+
+    systemFonts.forEach((font) => {
+      for (const fontPath of font.paths) {
+        if (fs.existsSync(fontPath)) {
+          try {
+            registerFont(fontPath, { family: font.name });
+            this.registeredFonts.set(font.name, fontPath);
+            console.log(`Registered system font: ${font.name}`);
+            break;
+          } catch (error) {
+            // Continue to next path
+          }
+        }
+      }
+    });
+  }
+
+  /**
+   * Register a custom font for server rendering
+   */
+  async registerFont(fontName, fontPath) {
+    try {
+      // Copy font to fonts directory for persistence
+      const permanentPath = path.join(this.fontsDir, `${fontName}.ttf`);
+      await fs.copy(fontPath, permanentPath);
+
+      // Register with canvas
+      registerFont(permanentPath, { family: fontName });
+      this.registeredFonts.set(fontName, permanentPath);
+
+      console.log(`Registered custom font: ${fontName} from ${fontPath}`);
+      return fontName;
+    } catch (error) {
+      console.error(`Failed to register font ${fontName}:`, error);
+      throw error;
+    }
   }
 
   /**
@@ -157,7 +238,7 @@ class VideoProcessor {
     progressCallback
   ) {
     const frameInterval = 1 / frameRate;
-    const batchSize = 100; // Process 100 frames at a time to manage memory
+    const batchSize = 200; // Increased batch size for better performance
 
     // Extract video frames in batches
     for (
@@ -208,17 +289,27 @@ class VideoProcessor {
           continue;
         }
 
-        // Render karaoke effects on this frame
-        await this.renderKaraokeFrame(
-          inputFramePath,
-          outputFramePath,
-          timestamp,
-          job.effects,
-          job.subtitles,
-          job.wordSegments,
-          width,
-          height
+        // Skip rendering if no active subtitle (performance optimization)
+        const hasActiveSubtitle = job.subtitles.some(
+          (sub) => timestamp >= sub.start_time && timestamp <= sub.end_time
         );
+
+        if (hasActiveSubtitle) {
+          // Render karaoke effects on this frame
+          await this.renderKaraokeFrame(
+            inputFramePath,
+            outputFramePath,
+            timestamp,
+            job.effects,
+            job.subtitles,
+            job.wordSegments,
+            width,
+            height
+          );
+        } else {
+          // Just copy the frame without processing
+          await fs.copy(inputFramePath, outputFramePath);
+        }
 
         // Update progress
         const progress = 5 + ((frameIndex + 1) / totalFrames) * 75;
@@ -239,7 +330,7 @@ class VideoProcessor {
   }
 
   /**
-   * Extract a batch of frames from video
+   * Extract a batch of frames from video (optimized)
    */
   async extractFrameBatch(
     videoPath,
@@ -261,11 +352,25 @@ class VideoProcessor {
 
       ffmpeg(videoPath)
         .seekInput(startTime)
-        .inputOptions(["-t", duration.toString()]) // Use input option for duration
+        .inputOptions([
+          "-t",
+          duration.toString(),
+          "-threads",
+          "0", // Use all available CPU threads
+          "-preset",
+          "ultrafast", // Fastest extraction preset
+        ])
         .fps(frameRate)
         .size("1920x1080")
         .output(path.join(outputDir, "frame_%06d.png"))
-        .outputOptions(["-start_number", "0"]) // Start numbering from 0
+        .outputOptions([
+          "-start_number",
+          "0",
+          "-q:v",
+          "2", // High quality but fast PNG compression
+          "-pix_fmt",
+          "rgb24", // Optimize pixel format for PNG
+        ])
         .on("start", (commandLine) => {
           console.log("FFmpeg command:", commandLine);
         })
@@ -289,7 +394,7 @@ class VideoProcessor {
   }
 
   /**
-   * Render karaoke effects on a single frame
+   * Render karaoke effects on a single frame (optimized)
    */
   async renderKaraokeFrame(
     inputPath,
@@ -305,9 +410,13 @@ class VideoProcessor {
       // Load the video frame
       const image = await loadImage(inputPath);
 
-      // Create canvas
+      // Create canvas with optimized settings
       const canvas = createCanvas(width, height);
       const ctx = canvas.getContext("2d");
+
+      // Optimize canvas for performance
+      ctx.imageSmoothingEnabled = false; // Disable antialiasing for speed
+      ctx.textRenderingOptimization = "speed";
 
       // Draw video frame
       ctx.drawImage(image, 0, 0, width, height);
@@ -326,13 +435,18 @@ class VideoProcessor {
         );
 
         if (words.length > 0) {
-          // Render karaoke text effects
-          this.renderKaraokeText(ctx, words, timestamp, effects, width, height);
+          // Use unified text renderer with pre-calculated gradients
+          const textRenderer = new UnifiedTextRenderer(ctx, effects);
+          textRenderer.preCalculateGradientColors();
+          textRenderer.renderKaraokeText(words, timestamp, width, height);
         }
       }
 
-      // Save the rendered frame
-      const buffer = canvas.toBuffer("image/png");
+      // Save with optimized PNG compression
+      const buffer = canvas.toBuffer("image/png", {
+        compressionLevel: 1, // Faster compression
+        filters: canvas.PNG_FILTER_NONE,
+      });
       await fs.writeFile(outputPath, buffer);
     } catch (error) {
       console.error(`Error rendering frame at ${timestamp}s:`, error);
@@ -352,27 +466,27 @@ class VideoProcessor {
     canvasWidth,
     canvasHeight
   ) {
-    // Setup text rendering with custom font support (matching client logic)
-    const fontFamily =
-      effects.fontFamily === "custom" && effects.customFontName
-        ? effects.customFontName
-        : effects.fontFamily || "Arial";
+    // Setup text rendering with custom font support (exactly matching client)
+    const fontFamily = this.getFontFamily(effects);
 
-    ctx.font = `${effects.fontWeight || "bold"} ${
-      effects.fontSize || 60
-    }px ${fontFamily}`;
+    // Match client font setup exactly
+    ctx.font = `${effects.fontWeight} ${effects.fontSize}px ${fontFamily}`;
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
 
-    // Debug: Log effects to ensure they're received correctly
-    console.log("Server rendering with effects:", {
+    // Debug: Log complete effects comparison
+    console.log("Server rendering effects:", {
       fontFamily: effects.fontFamily,
       customFontName: effects.customFontName,
       fontSize: effects.fontSize,
-      karaokeMode: effects.karaokeMode,
+      fontWeight: effects.fontWeight,
+      enableBorder: effects.enableBorder,
+      enableShadow: effects.enableShadow,
+      borderWidth: effects.borderWidth,
+      borderColor: effects.borderColor,
       glowIntensity: effects.glowIntensity,
-      autoBreak: effects.autoBreak,
-      maxLineWidth: effects.maxLineWidth,
+      karaokeMode: effects.karaokeMode,
+      resolvedFont: fontFamily,
     });
 
     // Apply base text effects
@@ -508,7 +622,8 @@ class VideoProcessor {
         y,
         color,
         effects.glowIntensity,
-        effects.highlightColor
+        effects.highlightColor,
+        effects
       );
     } else {
       this.renderTextWithEffects(ctx, word.word, x, y, color, effects);
@@ -544,7 +659,8 @@ class VideoProcessor {
         y,
         color,
         effects.glowIntensity * progress,
-        color
+        color,
+        effects
       );
     } else {
       this.renderTextWithEffects(ctx, word.word, x, y, color, effects);
@@ -590,7 +706,8 @@ class VideoProcessor {
           y,
           effects.highlightColor,
           effects.glowIntensity,
-          effects.highlightColor
+          effects.highlightColor,
+          effects
         );
       } else {
         this.renderTextWithEffects(
@@ -629,7 +746,8 @@ class VideoProcessor {
         bounceY,
         color,
         effects.glowIntensity,
-        effects.highlightColor
+        effects.highlightColor,
+        effects
       );
     } else {
       this.renderTextWithEffects(ctx, word.word, x, bounceY, color, effects);
@@ -639,22 +757,31 @@ class VideoProcessor {
   }
 
   /**
-   * Render text with glow effect
+   * Render text with glow effect (matching client)
    */
-  renderTextWithGlow(ctx, text, x, y, color, glowIntensity, glowColor) {
+  renderTextWithGlow(
+    ctx,
+    text,
+    x,
+    y,
+    color,
+    glowIntensity,
+    glowColor,
+    effects
+  ) {
     const originalShadowBlur = ctx.shadowBlur;
     const originalShadowColor = ctx.shadowColor;
 
     ctx.shadowColor = glowColor || color;
     ctx.shadowBlur = glowIntensity;
 
-    // Multiple glow layers for intensity
-    for (let i = 0; i < 3; i++) {
-      ctx.fillStyle = color;
-      ctx.fillText(text, x, y);
-      if (ctx.strokeStyle && ctx.lineWidth > 0) {
-        ctx.strokeText(text, x, y);
-      }
+    // Single glow pass for better performance (matching optimized client)
+    ctx.fillStyle = color;
+    ctx.fillText(text, x, y);
+
+    // Only draw border if explicitly enabled
+    if (effects.enableBorder && ctx.lineWidth > 0) {
+      ctx.strokeText(text, x, y);
     }
 
     // Restore original shadow settings
@@ -663,13 +790,13 @@ class VideoProcessor {
   }
 
   /**
-   * Render text with basic effects
+   * Render text with basic effects (matching client exactly)
    */
   renderTextWithEffects(ctx, text, x, y, color, effects) {
     ctx.fillStyle = color;
     ctx.fillText(text, x, y);
 
-    // Apply border if enabled
+    // Only draw border if explicitly enabled (matching client logic)
     if (effects.enableBorder && ctx.lineWidth > 0) {
       ctx.strokeText(text, x, y);
     }
@@ -690,15 +817,41 @@ class VideoProcessor {
   }
 
   /**
-   * Apply text effects to canvas context
+   * Get the appropriate font family for rendering
+   */
+  getFontFamily(effects) {
+    // Check for custom font first
+    if (effects.fontFamily === "custom" && effects.customFontName) {
+      if (this.registeredFonts.has(effects.customFontName)) {
+        return effects.customFontName;
+      } else {
+        console.warn(
+          `Custom font ${effects.customFontName} not registered, falling back to Arial`
+        );
+        return "Arial";
+      }
+    }
+
+    // Check if requested font is registered
+    if (effects.fontFamily && this.registeredFonts.has(effects.fontFamily)) {
+      return effects.fontFamily;
+    }
+
+    // Fallback to Arial (should always be available)
+    return "Arial";
+  }
+
+  /**
+   * Apply text effects to canvas context (matching client exactly)
    */
   applyTextEffects(ctx, effects) {
-    // Reset effects
+    // Reset effects (matching client)
     ctx.shadowBlur = 0;
     ctx.shadowOffsetX = 0;
     ctx.shadowOffsetY = 0;
+    ctx.lineWidth = 0; // Reset line width
 
-    // Apply shadow if enabled
+    // Apply shadow if enabled (matching client)
     if (effects.enableShadow) {
       ctx.shadowColor = effects.shadowColor || "#000000";
       ctx.shadowBlur = effects.shadowBlur || 4;
@@ -706,10 +859,13 @@ class VideoProcessor {
       ctx.shadowOffsetY = effects.shadowOffsetY || 2;
     }
 
-    // Apply border if enabled
+    // Apply border if enabled (matching client)
     if (effects.enableBorder) {
       ctx.strokeStyle = effects.borderColor || "#000000";
       ctx.lineWidth = effects.borderWidth || 2;
+    } else {
+      // Explicitly disable border
+      ctx.lineWidth = 0;
     }
   }
 

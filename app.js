@@ -10,6 +10,11 @@ class KaraokeApp {
     this.isPlaying = false;
     this.animationId = null;
 
+    // Performance tracking
+    this.performanceMode = "auto"; // auto, fast, quality
+    this.frameTimeHistory = [];
+    this.avgFrameTime = 16.67;
+
     this.effects = {
       fontFamily: "Arial",
       customFontName: "",
@@ -24,6 +29,8 @@ class KaraokeApp {
       highlightColor: "#ffff00",
       animationSpeed: 1,
       glowIntensity: 20,
+      glowColor: "#ffff00",
+      glowOpacity: 0.8,
       wordSpacing: 10,
       maxLineWidth: 1200,
       lineHeight: 1.2,
@@ -69,6 +76,10 @@ class KaraokeApp {
     this.initializeCollapsibleSections();
     this.initializePresets();
     this.initializeAdvancedRendering();
+
+    // Initialize unified text renderer for consistent preview/server rendering
+    this.textRenderer = new UnifiedTextRenderer(this.ctx, this.effects);
+    this.textRenderer.preCalculateGradientColors();
   }
 
   initializeEventListeners() {
@@ -127,12 +138,18 @@ class KaraokeApp {
 
     document.getElementById("primaryColor").addEventListener("change", (e) => {
       this.effects.primaryColor = e.target.value;
+      if (this.textRenderer) {
+        this.textRenderer.preCalculateGradientColors();
+      }
     });
 
     document
       .getElementById("highlightColor")
       .addEventListener("change", (e) => {
         this.effects.highlightColor = e.target.value;
+        if (this.textRenderer) {
+          this.textRenderer.preCalculateGradientColors();
+        }
       });
 
     document.getElementById("animationSpeed").addEventListener("input", (e) => {
@@ -143,6 +160,15 @@ class KaraokeApp {
     document.getElementById("glowIntensity").addEventListener("input", (e) => {
       this.effects.glowIntensity = parseInt(e.target.value);
       document.getElementById("glowValue").textContent = e.target.value + "px";
+    });
+
+    document.getElementById("glowColor").addEventListener("change", (e) => {
+      this.effects.glowColor = e.target.value;
+    });
+
+    document.getElementById("glowOpacity").addEventListener("input", (e) => {
+      this.effects.glowOpacity = parseFloat(e.target.value);
+      document.getElementById("glowOpacityValue").textContent = e.target.value;
     });
 
     document.getElementById("wordSpacing").addEventListener("input", (e) => {
@@ -357,10 +383,95 @@ class KaraokeApp {
   }
 
   /**
+   * Get cached gradient color for better performance
+   */
+  getGradientColor(progress) {
+    // Cache key based on progress (rounded to reduce cache size)
+    const progressKey = Math.round(progress * 100);
+    const cacheKey = `${this.effects.primaryColor}-${this.effects.highlightColor}-${progressKey}`;
+
+    // Check cache first
+    if (!this.gradientColorCache) {
+      this.gradientColorCache = new Map();
+    }
+
+    if (this.gradientColorCache.has(cacheKey)) {
+      return this.gradientColorCache.get(cacheKey);
+    }
+
+    // Calculate gradient color
+    const primary = this.hexToRgb(this.effects.primaryColor);
+    const highlight = this.hexToRgb(this.effects.highlightColor);
+
+    const r = Math.round(primary.r + (highlight.r - primary.r) * progress);
+    const g = Math.round(primary.g + (highlight.g - primary.g) * progress);
+    const b = Math.round(primary.b + (highlight.b - primary.b) * progress);
+
+    const color = `rgb(${r}, ${g}, ${b})`;
+
+    // Cache the result (limit cache size)
+    if (this.gradientColorCache.size > 200) {
+      this.gradientColorCache.clear();
+    }
+    this.gradientColorCache.set(cacheKey, color);
+
+    return color;
+  }
+
+  /**
+   * Fallback text renderer for when no word segments are available
+   */
+  renderFallbackText(text) {
+    const fontFamily =
+      this.effects.fontFamily === "custom" && this.effects.customFontName
+        ? this.effects.customFontName
+        : this.effects.fontFamily;
+
+    this.ctx.font = `${this.effects.fontWeight} ${this.effects.fontSize}px ${fontFamily}`;
+    this.ctx.textAlign = "center";
+    this.ctx.textBaseline = "middle";
+    this.ctx.fillStyle = this.effects.primaryColor;
+
+    const x = this.effects.positionX || this.canvas.width / 2;
+    const y = this.effects.positionY || this.canvas.height - 150;
+
+    this.ctx.fillText(text, x, y);
+  }
+
+  /**
+   * Pre-calculate all gradient colors for ultra-fast lookup
+   */
+  preCalculateGradientColors() {
+    if (!this.gradientColors) {
+      this.gradientColors = new Array(101); // 0-100 progress values
+    }
+
+    const primary = this.hexToRgb(this.effects.primaryColor);
+    const highlight = this.hexToRgb(this.effects.highlightColor);
+
+    // Pre-calculate all 101 gradient steps
+    for (let i = 0; i <= 100; i++) {
+      const progress = i / 100;
+      const r = Math.round(primary.r + (highlight.r - primary.r) * progress);
+      const g = Math.round(primary.g + (highlight.g - primary.g) * progress);
+      const b = Math.round(primary.b + (highlight.b - primary.b) * progress);
+      this.gradientColors[i] = `rgb(${r}, ${g}, ${b})`;
+    }
+  }
+
+  /**
+   * Update gradient colors when effects change
+   */
+  updateGradientColors() {
+    this.preCalculateGradientColors();
+  }
+
+  /**
    * Show current effects settings for debugging
    */
   showCurrentEffects() {
-    console.log("Current client effects:", this.effects);
+    console.log("=== CLIENT EFFECTS COMPARISON ===");
+    console.log("Raw effects object:", this.effects);
 
     const effectsInfo = {
       Font: `${this.effects.fontFamily} ${this.effects.fontSize}px ${this.effects.fontWeight}`,
@@ -373,15 +484,46 @@ class KaraokeApp {
       "Word Spacing": this.effects.wordSpacing,
       Position: `X: ${this.effects.positionX}, Y: ${this.effects.positionY}`,
       Shadow: this.effects.enableShadow
-        ? `${this.effects.shadowBlur}px ${this.effects.shadowColor}`
-        : "Disabled",
+        ? `ENABLED: ${this.effects.shadowBlur}px ${this.effects.shadowColor}`
+        : "DISABLED",
       Border: this.effects.enableBorder
-        ? `${this.effects.borderWidth}px ${this.effects.borderColor}`
-        : "Disabled",
+        ? `ENABLED: ${this.effects.borderWidth}px ${this.effects.borderColor}`
+        : "DISABLED",
     };
 
     console.table(effectsInfo);
-    alert("Effects logged to console. Check browser console for details.");
+
+    // Show critical settings for server comparison
+    console.log("=== CRITICAL SETTINGS FOR SERVER COMPARISON ===");
+    console.log("enableBorder:", this.effects.enableBorder);
+    console.log("enableShadow:", this.effects.enableShadow);
+    console.log("fontWeight:", this.effects.fontWeight);
+    console.log("karaokeMode:", this.effects.karaokeMode);
+
+    alert(
+      "Effects logged to console. Check browser console for server comparison."
+    );
+  }
+
+  /**
+   * Upload font file to server for server-side rendering
+   */
+  async uploadFontToServer(fontFile) {
+    const formData = new FormData();
+    formData.append("font", fontFile);
+
+    const response = await fetch("http://localhost:3001/upload/font", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await response.json();
+
+    if (!data.success) {
+      throw new Error(data.error || "Font upload failed");
+    }
+
+    return data.fontName;
   }
 
   async loadVideo(event) {
@@ -520,14 +662,25 @@ class KaraokeApp {
   }
 
   startRenderLoop() {
-    const render = () => {
-      this.renderFrame();
+    let lastFrameTime = 0;
+    const targetFPS = 60; // Limit to 60 FPS for smooth performance
+    const frameInterval = 1000 / targetFPS;
+
+    const render = (currentTime) => {
+      // Frame rate limiting
+      if (currentTime - lastFrameTime >= frameInterval) {
+        this.renderFrame();
+        lastFrameTime = currentTime;
+      }
       this.animationId = requestAnimationFrame(render);
     };
-    render();
+    render(0);
   }
 
   renderFrame() {
+    // Performance monitoring
+    const frameStart = performance.now();
+
     // Clear canvas with black background
     this.ctx.fillStyle = "#000000";
     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
@@ -545,6 +698,33 @@ class KaraokeApp {
 
     // Render karaoke subtitles
     this.renderKaraokeSubtitles();
+
+    // Performance monitoring and adaptive quality
+    const frameEnd = performance.now();
+    const frameTime = frameEnd - frameStart;
+
+    // Track frame time history
+    this.frameTimeHistory.push(frameTime);
+    if (this.frameTimeHistory.length > 10) {
+      this.frameTimeHistory.shift();
+    }
+
+    // Calculate average frame time
+    this.avgFrameTime =
+      this.frameTimeHistory.reduce((a, b) => a + b, 0) /
+      this.frameTimeHistory.length;
+
+    // Auto-adjust performance mode
+    if (this.performanceMode === "auto") {
+      if (this.avgFrameTime > 33) {
+        // Less than 30 FPS
+        this.performanceMode = "fast";
+        console.log("🚀 Switching to fast mode for better performance");
+      } else if (this.avgFrameTime < 16 && this.performanceMode === "fast") {
+        this.performanceMode = "quality";
+        console.log("🎨 Switching back to quality mode");
+      }
+    }
   }
 
   renderKaraokeSubtitles() {
@@ -554,63 +734,22 @@ class KaraokeApp {
     // Get words for this subtitle
     const words = this.getWordsForSubtitle(activeSubtitle);
 
-    // Set up text rendering with custom font support
-    const fontFamily =
-      this.effects.fontFamily === "custom" && this.effects.customFontName
-        ? this.effects.customFontName
-        : this.effects.fontFamily;
-
-    this.ctx.font = `${this.effects.fontWeight} ${this.effects.fontSize}px ${fontFamily}`;
-    this.ctx.textAlign = "left";
-    this.ctx.textBaseline = "middle";
-
-    // Apply text effects
-    this.applyTextEffects();
-
-    // Calculate text position - use precise positioning
-    const centerX = this.effects.positionX;
-    let baseY = this.effects.positionY;
-
-    // Override with preset positions if not using precise mode
-    if (this.effects.textPosition !== "precise") {
-      switch (this.effects.textPosition) {
-        case "top":
-          baseY = this.effects.fontSize + 50;
-          break;
-        case "center":
-          baseY = this.canvas.height / 2;
-          break;
-        case "custom":
-          baseY = (this.canvas.height * this.effects.verticalPosition) / 100;
-          break;
-        default: // bottom
-          baseY = this.canvas.height - 150;
-      }
-    }
-
     if (words.length === 0) {
-      // Fallback: render entire subtitle with line breaking
-      this.renderMultiLineText(activeSubtitle.text, centerX, baseY, []);
+      // Fallback: render entire subtitle text
+      this.renderFallbackText(activeSubtitle.text);
       return;
     }
 
-    // Break words into lines if auto-break is enabled
-    const lines = this.effects.autoBreak ? this.breakIntoLines(words) : [words];
+    // Update unified renderer with current effects
+    this.textRenderer.updateEffects(this.effects);
 
-    // Calculate total height for centering
-    const lineSpacing = this.effects.fontSize * this.effects.lineHeight;
-    const totalHeight = (lines.length - 1) * lineSpacing;
-    const startY = baseY - totalHeight / 2;
-
-    // Render each line
-    lines.forEach((lineWords, lineIndex) => {
-      const y = startY + lineIndex * lineSpacing;
-      this.renderLine(lineWords, centerX, y);
-    });
-
-    // Reset effects
-    this.ctx.shadowBlur = 0;
-    this.ctx.globalAlpha = 1;
+    // Use unified renderer (same as server)
+    this.textRenderer.renderKaraokeText(
+      words,
+      this.currentTime,
+      this.canvas.width,
+      this.canvas.height
+    );
   }
 
   getWordProgress(wordData) {
@@ -646,15 +785,14 @@ class KaraokeApp {
   }
 
   renderTextWithEffects(text, x, y, color) {
+    // Ultra-simple text rendering - just set color and draw
     this.ctx.fillStyle = color;
+    this.ctx.fillText(text, x, y);
 
-    // Draw border first if enabled
-    if (this.effects.enableBorder) {
+    // Only draw border if absolutely necessary
+    if (this.effects.enableBorder && this.ctx.lineWidth > 0) {
       this.ctx.strokeText(text, x, y);
     }
-
-    // Draw main text
-    this.ctx.fillText(text, x, y);
   }
 
   renderHighlightMode(wordData, x, y, progress) {
@@ -663,67 +801,60 @@ class KaraokeApp {
       ? this.effects.highlightColor
       : this.effects.primaryColor;
 
-    // Add extra glow for highlighted words
+    // Ultra-fast glow - minimal canvas operations
     if (isHighlighted && this.effects.glowIntensity > 0) {
-      const originalShadowBlur = this.ctx.shadowBlur;
-      const originalShadowColor = this.ctx.shadowColor;
-
       this.ctx.shadowColor = this.effects.highlightColor;
       this.ctx.shadowBlur = this.effects.glowIntensity;
-
-      // Multiple glow layers for intensity
-      for (let i = 0; i < 3; i++) {
-        this.renderTextWithEffects(wordData.word, x, y, color);
-      }
-
-      // Restore original shadow settings
-      this.ctx.shadowBlur = originalShadowBlur;
-      this.ctx.shadowColor = originalShadowColor;
+      this.ctx.fillStyle = color;
+      this.ctx.fillText(wordData.word, x, y);
+      this.ctx.shadowBlur = 0; // Reset immediately
+    } else {
+      this.ctx.fillStyle = color;
+      this.ctx.fillText(wordData.word, x, y);
     }
-
-    this.renderTextWithEffects(wordData.word, x, y, color);
   }
 
   renderGradientMode(wordData, x, y, progress) {
-    // Interpolate between primary and highlight colors
-    const primary = this.hexToRgb(this.effects.primaryColor);
-    const highlight = this.hexToRgb(this.effects.highlightColor);
-
-    const r = Math.round(primary.r + (highlight.r - primary.r) * progress);
-    const g = Math.round(primary.g + (highlight.g - primary.g) * progress);
-    const b = Math.round(primary.b + (highlight.b - primary.b) * progress);
-
-    const color = `rgb(${r}, ${g}, ${b})`;
-
-    // Add glow based on progress
-    if (progress > 0 && this.effects.glowIntensity > 0) {
-      const originalShadowBlur = this.ctx.shadowBlur;
-      const originalShadowColor = this.ctx.shadowColor;
-
-      this.ctx.shadowColor = color;
-      this.ctx.shadowBlur = this.effects.glowIntensity * progress;
-
-      this.renderTextWithEffects(wordData.word, x, y, color);
-
-      // Restore original shadow settings
-      this.ctx.shadowBlur = originalShadowBlur;
-      this.ctx.shadowColor = originalShadowColor;
+    // Performance-adaptive rendering
+    if (this.performanceMode === "fast") {
+      // Ultra-fast mode: no glow, simple color change
+      const color =
+        progress > 0.5
+          ? this.effects.highlightColor
+          : this.effects.primaryColor;
+      this.ctx.fillStyle = color;
+      this.ctx.fillText(wordData.word, x, y);
+      return;
     }
 
-    this.renderTextWithEffects(wordData.word, x, y, color);
+    // Quality mode: full gradient with optimized glow
+    const colorIndex = Math.floor(progress * 100);
+    const color = this.gradientColors[colorIndex] || this.effects.primaryColor;
+
+    // Optimized glow rendering
+    if (progress > 0 && this.effects.glowIntensity > 0) {
+      this.ctx.shadowColor = color;
+      this.ctx.shadowBlur = this.effects.glowIntensity;
+      this.ctx.fillStyle = color;
+      this.ctx.fillText(wordData.word, x, y);
+      this.ctx.shadowBlur = 0;
+    } else {
+      this.ctx.fillStyle = color;
+      this.ctx.fillText(wordData.word, x, y);
+    }
   }
 
   renderFillMode(wordData, x, y, progress) {
     const wordWidth = this.ctx.measureText(wordData.word).width;
 
-    // Create clipping region for fill effect
-    this.ctx.save();
-
-    // Draw unfilled part
+    // Draw unfilled part first
     this.renderTextWithEffects(wordData.word, x, y, this.effects.primaryColor);
 
-    // Draw filled part
+    // Draw filled part with clipping
     if (progress > 0) {
+      this.ctx.save();
+
+      // Create clipping region
       this.ctx.beginPath();
       this.ctx.rect(
         x,
@@ -733,35 +864,24 @@ class KaraokeApp {
       );
       this.ctx.clip();
 
-      // Add glow for filled part
+      // Optimized glow for filled part
       if (this.effects.glowIntensity > 0) {
-        const originalShadowBlur = this.ctx.shadowBlur;
-        const originalShadowColor = this.ctx.shadowColor;
-
         this.ctx.shadowColor = this.effects.highlightColor;
         this.ctx.shadowBlur = this.effects.glowIntensity;
-
-        this.renderTextWithEffects(
-          wordData.word,
-          x,
-          y,
-          this.effects.highlightColor
-        );
-
-        // Restore original shadow settings
-        this.ctx.shadowBlur = originalShadowBlur;
-        this.ctx.shadowColor = originalShadowColor;
+        this.ctx.shadowOffsetX = 0;
+        this.ctx.shadowOffsetY = 0;
       }
 
+      // Single render of filled part
       this.renderTextWithEffects(
         wordData.word,
         x,
         y,
         this.effects.highlightColor
       );
-    }
 
-    this.ctx.restore();
+      this.ctx.restore();
+    }
   }
 
   renderBounceMode(wordData, x, y, progress) {
@@ -782,22 +902,20 @@ class KaraokeApp {
     const color =
       progress > 0 ? this.effects.highlightColor : this.effects.primaryColor;
 
-    // Add glow for bouncing words
+    // Optimized glow for bouncing words
     if (progress > 0 && this.effects.glowIntensity > 0) {
-      const originalShadowBlur = this.ctx.shadowBlur;
-      const originalShadowColor = this.ctx.shadowColor;
-
       this.ctx.shadowColor = this.effects.highlightColor;
       this.ctx.shadowBlur = this.effects.glowIntensity;
+      this.ctx.shadowOffsetX = 0;
+      this.ctx.shadowOffsetY = 0;
 
+      // Single render with glow
       this.renderTextWithEffects(wordData.word, 0, 0, color);
-
-      // Restore original shadow settings
-      this.ctx.shadowBlur = originalShadowBlur;
-      this.ctx.shadowColor = originalShadowColor;
+    } else {
+      // No glow, direct render
+      this.renderTextWithEffects(wordData.word, 0, 0, color);
     }
 
-    this.renderTextWithEffects(wordData.word, 0, 0, color);
     this.ctx.restore();
   }
 
@@ -941,27 +1059,55 @@ class KaraokeApp {
       // Create a unique font name
       const fontName = `CustomFont_${Date.now()}`;
 
-      // Create font face
+      // Create font face for client-side preview
       const fontFace = new FontFace(
         fontName,
         `url(${URL.createObjectURL(file)})`
       );
 
-      // Load the font
+      // Load the font in browser
       await fontFace.load();
 
       // Add to document fonts
       document.fonts.add(fontFace);
 
-      // Store the font name
-      this.effects.customFontName = fontName;
-      this.loadedFonts.add(fontName);
+      // Upload font to server for server-side rendering
+      if (this.isServerAvailable && this.serverRenderer) {
+        try {
+          fontStatus.textContent = "Uploading font to server...";
+          fontStatus.style.color = "#FFA500";
 
-      // Update status
-      fontStatus.textContent = `✓ ${file.name} loaded`;
-      fontStatus.style.color = "#4CAF50";
+          const serverFontName = await this.uploadFontToServer(file);
 
-      console.log(`Custom font loaded: ${fontName}`);
+          // Use server font name for consistency
+          this.effects.customFontName = serverFontName;
+          this.loadedFonts.add(serverFontName);
+
+          fontStatus.textContent = `✓ ${file.name} loaded (client + server)`;
+          fontStatus.style.color = "#4CAF50";
+
+          console.log(`Font loaded on client and server: ${serverFontName}`);
+        } catch (serverError) {
+          console.warn(
+            "Server font upload failed, using client-only:",
+            serverError
+          );
+
+          // Fallback to client-only font
+          this.effects.customFontName = fontName;
+          this.loadedFonts.add(fontName);
+
+          fontStatus.textContent = `✓ ${file.name} loaded (client only)`;
+          fontStatus.style.color = "#FFA500";
+        }
+      } else {
+        // Server not available, client-only
+        this.effects.customFontName = fontName;
+        this.loadedFonts.add(fontName);
+
+        fontStatus.textContent = `✓ ${file.name} loaded (client only)`;
+        fontStatus.style.color = "#FFA500";
+      }
     } catch (error) {
       console.error("Font loading error:", error);
       fontStatus.textContent = `✗ Failed to load ${file.name}`;
@@ -2307,6 +2453,8 @@ You can now share your karaoke video or convert it to other formats if needed!`)
       highlightColor: this.effects.highlightColor,
       animationSpeed: this.effects.animationSpeed,
       glowIntensity: this.effects.glowIntensity,
+      glowColor: this.effects.glowColor,
+      glowOpacity: this.effects.glowOpacity,
       wordSpacing: this.effects.wordSpacing,
       maxLineWidth: this.effects.maxLineWidth,
       lineHeight: this.effects.lineHeight,

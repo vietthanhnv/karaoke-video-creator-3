@@ -126,6 +126,55 @@ class KaraokeRenderServer {
       }
     );
 
+    // Upload font file
+    this.app.post(
+      "/upload/font",
+      (req, res, next) => {
+        this.upload.single("font")(req, res, (err) => {
+          if (err) {
+            console.error("Font upload error:", err);
+            return res.status(400).json({
+              error: `Font upload failed: ${err.message}`,
+              code: err.code || "FONT_UPLOAD_ERROR",
+            });
+          }
+          next();
+        });
+      },
+      async (req, res) => {
+        try {
+          if (!req.file) {
+            return res.status(400).json({ error: "No font file uploaded" });
+          }
+
+          // Register font with the server's canvas
+          const fontName = `CustomFont_${Date.now()}`;
+          const fontPath = req.file.path;
+
+          try {
+            // Register font for server-side rendering
+            await this.videoProcessor.registerFont(fontName, fontPath);
+
+            res.json({
+              success: true,
+              fontName: fontName,
+              originalName: req.file.originalname,
+              message: "Font uploaded and registered successfully",
+            });
+          } catch (fontError) {
+            console.error("Font registration error:", fontError);
+            res.status(500).json({
+              error: "Failed to register font for server rendering",
+              details: fontError.message,
+            });
+          }
+        } catch (error) {
+          console.error("Font upload error:", error);
+          res.status(500).json({ error: error.message });
+        }
+      }
+    );
+
     // Start render job
     this.app.post("/render/start", async (req, res) => {
       try {

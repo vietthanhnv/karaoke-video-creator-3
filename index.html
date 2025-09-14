@@ -259,6 +259,22 @@
                   <span id="glowValue">20px</span>
                 </div>
                 <div class="effect-group">
+                  <label>Glow Color:</label>
+                  <input type="color" id="glowColor" value="#ffff00" />
+                </div>
+                <div class="effect-group">
+                  <label>Glow Opacity:</label>
+                  <input
+                    type="range"
+                    id="glowOpacity"
+                    min="0"
+                    max="1"
+                    step="0.1"
+                    value="0.8"
+                  />
+                  <span id="glowOpacityValue">0.8</span>
+                </div>
+                <div class="effect-group">
                   <label>Karaoke Mode:</label>
                   <select id="karaokeMode">
                     <option value="highlight">Highlight & Return</option>
@@ -571,6 +587,7 @@
     </div>
 
     <!-- Advanced Rendering Systems -->
+    <script src="src/core/UnifiedTextRenderer.js"></script>
     <script src="src/client/ServerRenderer.js"></script>
     <script src="src/core/true-parallel-renderer.js"></script>
     <script src="src/core/fixed-memory-renderer.js"></script>
