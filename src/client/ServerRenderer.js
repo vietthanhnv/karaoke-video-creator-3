@@ -196,6 +196,55 @@ class ServerRenderer {
   }
 
   /**
+   * Upload image and audio files to server for karaoke video creation
+   */
+  async uploadImageAudio(imageFile, audioFile) {
+    const formData = new FormData();
+    formData.append("image", imageFile);
+    formData.append("audio", audioFile);
+
+    try {
+      const response = await fetch(`${this.serverUrl}/upload/image-audio`, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+
+        if (response.status === 413 || errorData.code === "FILE_TOO_LARGE") {
+          throw new Error(
+            "Files are too large. Maximum size is 2GB total. Please use smaller files."
+          );
+        }
+
+        throw new Error(
+          errorData.error || `Upload failed with status ${response.status}`
+        );
+      }
+
+      const data = await response.json();
+
+      if (!data.success) {
+        throw new Error(data.error || "Upload failed");
+      }
+
+      return data;
+    } catch (error) {
+      console.error("Image+Audio upload failed:", error);
+
+      // Provide user-friendly error messages
+      if (error.message.includes("fetch")) {
+        throw new Error(
+          "Cannot connect to server. Please make sure the server is running."
+        );
+      }
+
+      throw error;
+    }
+  }
+
+  /**
    * Start server-based rendering
    */
   async renderVideoOnServer(

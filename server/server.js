@@ -126,6 +126,121 @@ class KaraokeRenderServer {
       }
     );
 
+    // Upload image and audio files for karaoke video creation
+    this.app.post(
+      "/upload/image-audio",
+      (req, res, next) => {
+        this.upload.fields([
+          { name: "image", maxCount: 1 },
+          { name: "audio", maxCount: 1 },
+        ])(req, res, (err) => {
+          if (err) {
+            console.error("Multer upload error:", err);
+            if (err.code === "LIMIT_FILE_SIZE") {
+              return res.status(413).json({
+                error: "Files too large. Maximum size is 2GB total.",
+                code: "FILE_TOO_LARGE",
+              });
+            }
+            return res.status(400).json({
+              error: `Upload failed: ${err.message}`,
+              code: err.code || "UPLOAD_ERROR",
+            });
+          }
+          next();
+        });
+      },
+      async (req, res) => {
+        try {
+          console.log("Processing image+audio upload request...");
+
+          if (!req.files || !req.files.image || !req.files.audio) {
+            console.error("Missing files in request:", {
+              hasFiles: !!req.files,
+              hasImage: !!(req.files && req.files.image),
+              hasAudio: !!(req.files && req.files.audio),
+            });
+            return res.status(400).json({
+              error: "Both image and audio files are required",
+            });
+          }
+
+          const imageFile = req.files.image[0];
+          const audioFile = req.files.audio[0];
+
+          console.log("Files received:", {
+            image: {
+              name: imageFile.originalname,
+              size: imageFile.size,
+              path: imageFile.path,
+            },
+            audio: {
+              name: audioFile.originalname,
+              size: audioFile.size,
+              path: audioFile.path,
+            },
+          });
+
+          // Just analyze audio to get duration, don't create video yet
+          console.log("Analyzing audio file...");
+          const audioInfo = await this.videoProcessor.analyzeAudio(
+            audioFile.path
+          );
+
+          // Create a unique identifier for this image+audio combination
+          const videoId = `${uuidv4()}-image-audio-combo`;
+
+          // Store the file paths and info for later processing during render
+          const imageAudioInfo = {
+            type: "image-audio",
+            imagePath: imageFile.path,
+            audioPath: audioFile.path,
+            imageInfo: {
+              originalname: imageFile.originalname,
+              size: imageFile.size,
+            },
+            audioInfo: {
+              originalname: audioFile.originalname,
+              size: audioFile.size,
+              duration: audioInfo.duration,
+            },
+          };
+
+          // Store this info in a simple JSON file for later retrieval
+          const infoPath = path.join(__dirname, "uploads", `${videoId}.json`);
+          await fs.writeFile(infoPath, JSON.stringify(imageAudioInfo, null, 2));
+
+          console.log("Image+audio info stored successfully:", videoId);
+
+          res.json({
+            success: true,
+            videoId: videoId,
+            videoInfo: {
+              duration: audioInfo.duration,
+              width: 1920,
+              height: 1080,
+              frameRate: 30,
+              hasAudio: true,
+              format: "image-audio-combo",
+              size: imageFile.size + audioFile.size,
+            },
+            message: "Image and audio uploaded successfully",
+          });
+        } catch (error) {
+          console.error("Image+Audio upload error:", error);
+          console.error("Error stack:", error.stack);
+
+          // Ensure we always send a response
+          if (!res.headersSent) {
+            res.status(500).json({
+              error: error.message || "Unknown error occurred",
+              details: "Check server logs for more information",
+            });
+          }
+        }
+      }
+    );
+
     // Upload font file
     this.app.post(
       "/upload/font",
@@ -348,6 +463,14 @@ class KaraokeRenderServer {
       if (!job) {
         throw new Error("Job not found");
       }
+
+      console.log("Processing render job:", {
+        jobId,
+        videoId: job.videoId,
+        hasSubtitles: !!job.subtitles,
+        hasWordSegments: !!job.wordSegments,
+        hasEffects: !!job.effects,
+      });
 
       // Update job status
       this.jobManager.updateJobStatus(

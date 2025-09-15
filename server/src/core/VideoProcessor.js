@@ -140,11 +140,116 @@ class VideoProcessor {
   }
 
   /**
+   * Analyze audio file to get metadata
+   */
+  async analyzeAudio(audioPath) {
+    return new Promise((resolve, reject) => {
+      ffmpeg.ffprobe(audioPath, (err, metadata) => {
+        if (err) {
+          reject(new Error(`Audio analysis failed: ${err.message}`));
+          return;
+        }
+
+        const audioStream = metadata.streams.find(
+          (s) => s.codec_type === "audio"
+        );
+
+        if (!audioStream) {
+          reject(new Error("No audio stream found"));
+          return;
+        }
+
+        resolve({
+          duration: parseFloat(metadata.format.duration),
+          sampleRate: audioStream.sample_rate,
+          channels: audioStream.channels,
+          format: metadata.format.format_name,
+          size: metadata.format.size,
+        });
+      });
+    });
+  }
+
+  /**
+   * Create a video file from image and audio
+   */
+  async createVideoFromImageAudio(imagePath, audioPath) {
+    const videoId = `${uuidv4()}-image-audio.mp4`;
+    const outputPath = path.join(__dirname, "../../uploads", videoId);
+
+    try {
+      // Get audio duration to determine video length
+      const audioInfo = await this.analyzeAudio(audioPath);
+      const duration = audioInfo.duration;
+
+      console.log(
+        `Creating video from image and audio, duration: ${duration}s`
+      );
+
+      // Create video from image and audio using FFmpeg
+      await new Promise((resolve, reject) => {
+        ffmpeg()
+          .input(imagePath)
+          .inputOptions([
+            "-loop",
+            "1", // Loop the image
+            "-t",
+            duration.toString(), // Set duration to match audio
+          ])
+          .input(audioPath)
+          .outputOptions([
+            "-c:v",
+            "libx264",
+            "-tune",
+            "stillimage",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "192k",
+            "-pix_fmt",
+            "yuv420p",
+            "-shortest", // End when shortest input ends
+            "-vf",
+            "scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:black", // Scale and pad to 1920x1080
+          ])
+          .output(outputPath)
+          .on("start", (commandLine) => {
+            console.log("FFmpeg command:", commandLine);
+          })
+          .on("progress", (progress) => {
+            console.log(`Video creation progress: ${progress.percent}%`);
+          })
+          .on("end", () => {
+            console.log("Video created successfully from image and audio");
+            resolve();
+          })
+          .on("error", (error) => {
+            console.error("Video creation failed:", error);
+            reject(error);
+          })
+          .run();
+      });
+
+      // Analyze the created video
+      const videoInfo = await this.analyzeVideo(outputPath);
+
+      return {
+        videoId,
+        info: videoInfo,
+      };
+    } catch (error) {
+      console.error("Failed to create video from image and audio:", error);
+      throw error;
+    }
+  }
+
+  /**
    * Process video with karaoke effects using file-based streaming
    */
   async processVideo(job, progressCallback) {
     const jobId = job.id;
-    const videoPath = path.join(__dirname, "../../uploads", job.videoId);
+    let videoPath = path.join(__dirname, "../../uploads", job.videoId);
+
     // Determine output format and extension
     const format = job.renderSettings.format || "mp4";
     const extension = format === "webm" ? "webm" : "mp4";
@@ -153,13 +258,55 @@ class VideoProcessor {
     // Debug: Log complete job data to verify effects are received
     console.log("Processing video with job data:", {
       jobId,
+      videoId: job.videoId,
+      videoPath,
       effectsKeys: Object.keys(job.effects || {}),
       effects: job.effects,
       renderSettings: job.renderSettings,
     });
 
     try {
-      progressCallback({ percent: 0, message: "Analyzing video..." });
+      progressCallback({ percent: 0, message: "Analyzing input..." });
+
+      // Check if this is an image-audio combo
+      const infoPath = path.join(
+        __dirname,
+        "../../uploads",
+        `${job.videoId}.json`
+      );
+      if (fs.existsSync(infoPath)) {
+        console.log("Detected image-audio combo, creating video first...");
+        progressCallback({
+          percent: 5,
+          message: "Creating video from image and audio...",
+        });
+
+        // Read the stored image-audio info
+        const imageAudioInfo = JSON.parse(await fs.readFile(infoPath, "utf8"));
+
+        // Create the video from image and audio
+        const createdVideoInfo = await this.createVideoFromImageAudio(
+          imageAudioInfo.imagePath,
+          imageAudioInfo.audioPath
+        );
+
+        // Update the video path to the newly created video
+        videoPath = path.join(
+          __dirname,
+          "../../uploads",
+          createdVideoInfo.videoId
+        );
+
+        progressCallback({
+          percent: 15,
+          message: "Video created, analyzing...",
+        });
+      }
+
+      // Check if video file exists
+      if (!fs.existsSync(videoPath)) {
+        throw new Error(`Video file not found at path: ${videoPath}`);
+      }
 
       // Get video info
       const videoInfo = await this.analyzeVideo(videoPath);

@@ -67,6 +67,13 @@ class KaraokeApp {
     this.isServerAvailable = false;
     this.currentVideoFile = null;
 
+    // Image + Audio mode
+    this.inputMode = "video"; // "video" or "imageAudio"
+    this.currentImageFile = null;
+    this.currentAudioFile = null;
+    this.loadedImage = null;
+    this.audioDuration = 0;
+
     // Status display
     this.statusDisplay = document.getElementById("statusDisplay");
 
@@ -83,10 +90,23 @@ class KaraokeApp {
   }
 
   initializeEventListeners() {
+    // Input mode switching
+    document.querySelectorAll('input[name="inputMode"]').forEach((radio) => {
+      radio.addEventListener("change", (e) =>
+        this.switchInputMode(e.target.value)
+      );
+    });
+
     // File inputs
     document
       .getElementById("videoInput")
       .addEventListener("change", (e) => this.loadVideo(e));
+    document
+      .getElementById("imageInput")
+      .addEventListener("change", (e) => this.loadImage(e));
+    document
+      .getElementById("audioInput")
+      .addEventListener("change", (e) => this.loadAudio(e));
     document
       .getElementById("subtitleInput")
       .addEventListener("change", (e) => this.loadSubtitles(e));
@@ -382,39 +402,78 @@ class KaraokeApp {
   }
 
   /**
-   * Retry uploading video to server
+   * Retry uploading media to server
    */
   async retryVideoUpload() {
-    if (!this.currentVideoFile) {
-      this.showStatus(
-        "No video file to upload. Please load a video first.",
-        "error"
-      );
-      return false;
+    if (this.inputMode === "video") {
+      if (!this.currentVideoFile) {
+        this.showStatus(
+          "No video file to upload. Please load a video first.",
+          "error"
+        );
+        return false;
+      }
+
+      if (!this.isServerAvailable || !this.serverRenderer) {
+        this.showStatus(
+          "Server not available. Please check if the server is running.",
+          "error"
+        );
+        return false;
+      }
+
+      try {
+        this.showStatus("Retrying video upload to server...", "info");
+        const uploadResult = await this.serverRenderer.uploadVideo(
+          this.currentVideoFile
+        );
+        this.uploadedVideoId = uploadResult.videoId;
+        console.log("Video re-uploaded to server:", uploadResult);
+        this.showStatus("Video uploaded to server successfully", "success");
+        return true;
+      } catch (error) {
+        console.error("Failed to re-upload video to server:", error);
+        this.showStatus(`Failed to upload video: ${error.message}`, "error", 0);
+        return false;
+      }
+    } else if (this.inputMode === "imageAudio") {
+      if (!this.currentImageFile || !this.currentAudioFile) {
+        this.showStatus(
+          "No image and audio files to upload. Please load both files first.",
+          "error"
+        );
+        return false;
+      }
+
+      if (!this.isServerAvailable || !this.serverRenderer) {
+        this.showStatus(
+          "Server not available. Please check if the server is running.",
+          "error"
+        );
+        return false;
+      }
+
+      try {
+        this.showStatus("Retrying image and audio upload to server...", "info");
+        const uploadResult = await this.serverRenderer.uploadImageAudio(
+          this.currentImageFile,
+          this.currentAudioFile
+        );
+        this.uploadedVideoId = uploadResult.videoId;
+        console.log("Image and audio re-uploaded to server:", uploadResult);
+        this.showStatus(
+          "Image and audio uploaded to server successfully",
+          "success"
+        );
+        return true;
+      } catch (error) {
+        console.error("Failed to re-upload image and audio to server:", error);
+        this.showStatus(`Failed to upload files: ${error.message}`, "error", 0);
+        return false;
+      }
     }
 
-    if (!this.isServerAvailable || !this.serverRenderer) {
-      this.showStatus(
-        "Server not available. Please check if the server is running.",
-        "error"
-      );
-      return false;
-    }
-
-    try {
-      this.showStatus("Retrying video upload to server...", "info");
-      const uploadResult = await this.serverRenderer.uploadVideo(
-        this.currentVideoFile
-      );
-      this.uploadedVideoId = uploadResult.videoId;
-      console.log("Video re-uploaded to server:", uploadResult);
-      this.showStatus("Video uploaded to server successfully", "success");
-      return true;
-    } catch (error) {
-      console.error("Failed to re-upload video to server:", error);
-      this.showStatus(`Failed to upload video: ${error.message}`, "error", 0);
-      return false;
-    }
+    return false;
   }
 
   /**
@@ -561,6 +620,84 @@ class KaraokeApp {
     return data.fontName;
   }
 
+  /**
+   * Switch between video mode and image+audio mode
+   */
+  switchInputMode(mode) {
+    this.inputMode = mode;
+
+    const videoInputs = document.getElementById("videoModeInputs");
+    const imageAudioInputs = document.getElementById("imageAudioModeInputs");
+    const imageAudioStatus = document.getElementById("imageAudioStatus");
+
+    if (mode === "video") {
+      videoInputs.style.display = "flex";
+      imageAudioInputs.style.display = "none";
+      if (imageAudioStatus) imageAudioStatus.style.display = "none";
+      this.showStatus("Switched to Video Mode", "info", 3000);
+    } else {
+      videoInputs.style.display = "none";
+      imageAudioInputs.style.display = "flex";
+      if (imageAudioStatus) imageAudioStatus.style.display = "flex";
+      this.showStatus("Switched to Image + Audio Mode", "info", 3000);
+      this.updateImageAudioStatus();
+    }
+
+    // Clear current media
+    this.clearCurrentMedia();
+  }
+
+  /**
+   * Clear current loaded media
+   */
+  clearCurrentMedia() {
+    this.video.src = "";
+    this.currentVideoFile = null;
+    this.currentImageFile = null;
+    this.currentAudioFile = null;
+    this.loadedImage = null;
+    this.audioDuration = 0;
+    this.uploadedVideoId = null;
+
+    // Clear canvas
+    this.ctx.fillStyle = "#000000";
+    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+    // Update status indicators
+    this.updateImageAudioStatus();
+  }
+
+  /**
+   * Update image+audio status indicators
+   */
+  updateImageAudioStatus() {
+    const imageStatus = document.getElementById("imageStatus");
+    const audioStatus = document.getElementById("audioStatus");
+    const serverUploadStatus = document.getElementById("serverUploadStatus");
+
+    if (imageStatus) {
+      imageStatus.textContent = this.currentImageFile
+        ? `✅ ${this.currentImageFile.name}`
+        : "❌ No image";
+    }
+
+    if (audioStatus) {
+      audioStatus.textContent = this.currentAudioFile
+        ? `✅ ${this.currentAudioFile.name} (${this.audioDuration.toFixed(1)}s)`
+        : "❌ No audio";
+    }
+
+    if (serverUploadStatus) {
+      if (this.uploadedVideoId) {
+        serverUploadStatus.textContent = "✅ Ready to render";
+      } else if (this.currentImageFile && this.currentAudioFile) {
+        serverUploadStatus.textContent = "⏳ Uploading...";
+      } else {
+        serverUploadStatus.textContent = "⏳ Not uploaded";
+      }
+    }
+  }
+
   async loadVideo(event) {
     const file = event.target.files[0];
     if (file) {
@@ -616,6 +753,198 @@ class KaraokeApp {
           "warning"
         );
       }
+    }
+  }
+
+  /**
+   * Load image file for image+audio mode
+   */
+  async loadImage(event) {
+    const file = event.target.files[0];
+    if (file) {
+      this.currentImageFile = file;
+      console.log(
+        "Loading image file:",
+        file.name,
+        "Size:",
+        file.size,
+        "Type:",
+        file.type
+      );
+
+      try {
+        // Load image for preview
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+
+        img.onload = () => {
+          this.loadedImage = img;
+          console.log("Image loaded:", img.width, "x", img.height);
+          this.showStatus(`Image loaded: ${file.name}`, "success", 3000);
+
+          // Update status indicators
+          this.updateImageAudioStatus();
+
+          // Draw image on canvas immediately
+          this.drawImageOnCanvas();
+
+          // Upload to server if available and we have both image and audio
+          this.uploadImageAudioToServer();
+        };
+
+        img.onerror = () => {
+          console.error("Image loading error");
+          this.showStatus("Error loading image file", "error");
+        };
+
+        img.src = url;
+      } catch (error) {
+        console.error("Image loading error:", error);
+        this.showStatus("Error loading image file", "error");
+      }
+    }
+  }
+
+  /**
+   * Load audio file for image+audio mode
+   */
+  async loadAudio(event) {
+    const file = event.target.files[0];
+    if (file) {
+      this.currentAudioFile = file;
+      console.log(
+        "Loading audio file:",
+        file.name,
+        "Size:",
+        file.size,
+        "Type:",
+        file.type
+      );
+
+      try {
+        // Create audio element to get duration
+        const audio = new Audio();
+        const url = URL.createObjectURL(file);
+
+        audio.onloadedmetadata = () => {
+          this.audioDuration = audio.duration;
+          console.log("Audio loaded, duration:", this.audioDuration, "seconds");
+          this.showStatus(
+            `Audio loaded: ${file.name} (${this.audioDuration.toFixed(1)}s)`,
+            "success",
+            3000
+          );
+
+          // Update status indicators
+          this.updateImageAudioStatus();
+
+          // Set up video element to use audio for timing
+          this.setupAudioForTiming(url);
+
+          // Upload to server if available and we have both image and audio
+          this.uploadImageAudioToServer();
+        };
+
+        audio.onerror = () => {
+          console.error("Audio loading error");
+          this.showStatus("Error loading audio file", "error");
+        };
+
+        audio.src = url;
+      } catch (error) {
+        console.error("Audio loading error:", error);
+        this.showStatus("Error loading audio file", "error");
+      }
+    }
+  }
+
+  /**
+   * Draw the loaded image on canvas
+   */
+  drawImageOnCanvas() {
+    if (!this.loadedImage) return;
+
+    // Clear canvas
+    this.ctx.fillStyle = "#000000";
+    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+    // Calculate scaling to fit image in canvas while maintaining aspect ratio
+    const canvasAspect = this.canvas.width / this.canvas.height;
+    const imageAspect = this.loadedImage.width / this.loadedImage.height;
+
+    let drawWidth, drawHeight, drawX, drawY;
+
+    if (imageAspect > canvasAspect) {
+      // Image is wider than canvas
+      drawWidth = this.canvas.width;
+      drawHeight = this.canvas.width / imageAspect;
+      drawX = 0;
+      drawY = (this.canvas.height - drawHeight) / 2;
+    } else {
+      // Image is taller than canvas
+      drawHeight = this.canvas.height;
+      drawWidth = this.canvas.height * imageAspect;
+      drawX = (this.canvas.width - drawWidth) / 2;
+      drawY = 0;
+    }
+
+    this.ctx.drawImage(this.loadedImage, drawX, drawY, drawWidth, drawHeight);
+  }
+
+  /**
+   * Set up audio for timing in image+audio mode
+   */
+  setupAudioForTiming(audioUrl) {
+    // Use the video element to play audio for timing
+    this.video.src = audioUrl;
+    this.video.load();
+
+    this.video.onloadedmetadata = () => {
+      console.log("Audio set up for timing, duration:", this.video.duration);
+    };
+  }
+
+  /**
+   * Upload image and audio to server for processing
+   */
+  async uploadImageAudioToServer() {
+    if (!this.currentImageFile || !this.currentAudioFile) {
+      return; // Need both files
+    }
+
+    if (!this.isServerAvailable || !this.serverRenderer) {
+      this.showStatus(
+        "Server not available for image+audio processing",
+        "warning"
+      );
+      return;
+    }
+
+    try {
+      this.showStatus("Uploading image and audio to server...", "info");
+
+      // Upload both files
+      const uploadResult = await this.serverRenderer.uploadImageAudio(
+        this.currentImageFile,
+        this.currentAudioFile
+      );
+
+      this.uploadedVideoId = uploadResult.videoId;
+      console.log("Image and audio uploaded to server:", uploadResult);
+      console.log("Uploaded video ID:", this.uploadedVideoId);
+      this.showStatus("Image and audio uploaded successfully", "success");
+
+      // Update status indicators
+      this.updateImageAudioStatus();
+    } catch (error) {
+      console.error("Failed to upload image and audio to server:", error);
+      this.uploadedVideoId = null;
+      this.showStatus(
+        "Failed to upload files to server. Server rendering unavailable.",
+        "error",
+        0,
+        true
+      );
     }
   }
 
@@ -742,8 +1071,9 @@ class KaraokeApp {
     this.ctx.fillStyle = "#000000";
     this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
 
-    // Draw video frame if available
-    if (this.video.videoWidth > 0) {
+    // Draw background based on input mode
+    if (this.inputMode === "video" && this.video.videoWidth > 0) {
+      // Draw video frame
       this.ctx.drawImage(
         this.video,
         0,
@@ -751,6 +1081,9 @@ class KaraokeApp {
         this.canvas.width,
         this.canvas.height
       );
+    } else if (this.inputMode === "imageAudio" && this.loadedImage) {
+      // Draw static image
+      this.drawImageOnCanvas();
     }
 
     // Render karaoke subtitles
@@ -1191,8 +1524,25 @@ class KaraokeApp {
   }
 
   async startRender() {
-    if (!this.video.src) {
+    // Debug: Log current state
+    console.log("Starting render with state:", {
+      inputMode: this.inputMode,
+      hasVideo: !!this.video.src,
+      hasImageFile: !!this.currentImageFile,
+      hasAudioFile: !!this.currentAudioFile,
+      uploadedVideoId: this.uploadedVideoId,
+      isServerAvailable: this.isServerAvailable,
+    });
+
+    // Check if we have the required media based on input mode
+    if (this.inputMode === "video" && !this.video.src) {
       alert("Please load a video file first!");
+      return;
+    } else if (
+      this.inputMode === "imageAudio" &&
+      (!this.currentImageFile || !this.currentAudioFile)
+    ) {
+      alert("Please load both image and audio files first!");
       return;
     }
 
@@ -3120,6 +3470,14 @@ You can now share your karaoke video or convert it to other formats if needed!`)
     format,
     progressCallback
   ) {
+    console.log("renderVideoOnServer called with:", {
+      inputMode: this.inputMode,
+      uploadedVideoId: this.uploadedVideoId,
+      hasImageFile: !!this.currentImageFile,
+      hasAudioFile: !!this.currentAudioFile,
+      hasVideoFile: !!this.currentVideoFile,
+    });
+
     if (!this.isServerAvailable || !this.serverRenderer) {
       throw new Error(
         "Server rendering not available. Please start the render server."
@@ -3127,35 +3485,75 @@ You can now share your karaoke video or convert it to other formats if needed!`)
     }
 
     if (!this.uploadedVideoId) {
-      // Try to re-upload the video if we have it
-      if (this.video && this.video.src && this.currentVideoFile) {
-        try {
-          progressCallback(0, "Re-uploading video to server...");
-          const uploadResult = await this.serverRenderer.uploadVideo(
-            this.currentVideoFile
-          );
-          this.uploadedVideoId = uploadResult.videoId;
-          console.log("Video re-uploaded to server:", uploadResult);
-        } catch (error) {
+      // Try to re-upload based on current input mode
+      if (this.inputMode === "video") {
+        // Video mode: re-upload video file
+        if (this.video && this.video.src && this.currentVideoFile) {
+          try {
+            progressCallback(0, "Re-uploading video to server...");
+            const uploadResult = await this.serverRenderer.uploadVideo(
+              this.currentVideoFile
+            );
+            this.uploadedVideoId = uploadResult.videoId;
+            console.log("Video re-uploaded to server:", uploadResult);
+          } catch (error) {
+            this.showStatus(
+              "Failed to upload video to server. Please try again.",
+              "error",
+              0,
+              true
+            );
+            throw new Error(
+              "Video upload failed. Please try again or reload the video file."
+            );
+          }
+        } else {
           this.showStatus(
-            "Failed to upload video to server. Please try again.",
+            "Video not uploaded to server. Please reload the video file.",
             "error",
             0,
             true
           );
           throw new Error(
-            "Video upload failed. Please try again or reload the video file."
+            "Video not uploaded to server. Please reload the video file."
+          );
+        }
+      } else if (this.inputMode === "imageAudio") {
+        // Image+Audio mode: re-upload image and audio files
+        if (this.currentImageFile && this.currentAudioFile) {
+          try {
+            progressCallback(0, "Re-uploading image and audio to server...");
+            const uploadResult = await this.serverRenderer.uploadImageAudio(
+              this.currentImageFile,
+              this.currentAudioFile
+            );
+            this.uploadedVideoId = uploadResult.videoId;
+            console.log("Image and audio re-uploaded to server:", uploadResult);
+          } catch (error) {
+            this.showStatus(
+              "Failed to upload image and audio to server. Please try again.",
+              "error",
+              0,
+              true
+            );
+            throw new Error(
+              "Image and audio upload failed. Please try again or reload the files."
+            );
+          }
+        } else {
+          this.showStatus(
+            "Image and audio not uploaded to server. Please reload both files.",
+            "error",
+            0,
+            true
+          );
+          throw new Error(
+            "Image and audio not uploaded to server. Please reload both files."
           );
         }
       } else {
-        this.showStatus(
-          "Video not uploaded to server. Please reload the video file.",
-          "error",
-          0,
-          true
-        );
         throw new Error(
-          "Video not uploaded to server. Please reload the video file."
+          "No media uploaded to server. Please load media files first."
         );
       }
     }
