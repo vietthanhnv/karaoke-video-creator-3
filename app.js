@@ -90,10 +90,10 @@ class KaraokeApp {
   }
 
   initializeEventListeners() {
-    // Input mode switching
-    document.querySelectorAll('input[name="inputMode"]').forEach((radio) => {
-      radio.addEventListener("change", (e) =>
-        this.switchInputMode(e.target.value)
+    // Tab switching
+    document.querySelectorAll(".tab-button").forEach((button) => {
+      button.addEventListener("click", (e) =>
+        this.switchTab(e.target.dataset.tab)
       );
     });
 
@@ -623,22 +623,26 @@ class KaraokeApp {
   /**
    * Switch between video mode and image+audio mode
    */
-  switchInputMode(mode) {
-    this.inputMode = mode;
+  switchTab(tabName) {
+    // Update input mode
+    this.inputMode = tabName === "video" ? "video" : "imageAudio";
 
-    const videoInputs = document.getElementById("videoModeInputs");
-    const imageAudioInputs = document.getElementById("imageAudioModeInputs");
-    const imageAudioStatus = document.getElementById("imageAudioStatus");
+    // Update tab buttons
+    document.querySelectorAll(".tab-button").forEach((button) => {
+      button.classList.remove("active");
+    });
+    document.querySelector(`[data-tab="${tabName}"]`).classList.add("active");
 
-    if (mode === "video") {
-      videoInputs.style.display = "flex";
-      imageAudioInputs.style.display = "none";
-      if (imageAudioStatus) imageAudioStatus.style.display = "none";
+    // Update tab panels
+    document.querySelectorAll(".tab-panel").forEach((panel) => {
+      panel.classList.remove("active");
+    });
+
+    if (tabName === "video") {
+      document.getElementById("videoTab").classList.add("active");
       this.showStatus("Switched to Video Mode", "info", 3000);
     } else {
-      videoInputs.style.display = "none";
-      imageAudioInputs.style.display = "flex";
-      if (imageAudioStatus) imageAudioStatus.style.display = "flex";
+      document.getElementById("imageAudioTab").classList.add("active");
       this.showStatus("Switched to Image + Audio Mode", "info", 3000);
       this.updateImageAudioStatus();
     }
@@ -665,36 +669,84 @@ class KaraokeApp {
 
     // Update status indicators
     this.updateImageAudioStatus();
+    this.updateVideoStatus();
   }
 
   /**
    * Update image+audio status indicators
    */
   updateImageAudioStatus() {
-    const imageStatus = document.getElementById("imageStatus");
-    const audioStatus = document.getElementById("audioStatus");
-    const serverUploadStatus = document.getElementById("serverUploadStatus");
-
-    if (imageStatus) {
-      imageStatus.textContent = this.currentImageFile
-        ? `✅ ${this.currentImageFile.name}`
-        : "❌ No image";
+    // Show/hide status grid
+    const statusGrid = document.getElementById("imageAudioStatus");
+    if (statusGrid) {
+      statusGrid.style.display =
+        this.currentImageFile || this.currentAudioFile ? "grid" : "none";
     }
 
-    if (audioStatus) {
-      audioStatus.textContent = this.currentAudioFile
-        ? `✅ ${this.currentAudioFile.name} (${this.audioDuration.toFixed(1)}s)`
-        : "❌ No audio";
-    }
-
-    if (serverUploadStatus) {
-      if (this.uploadedVideoId) {
-        serverUploadStatus.textContent = "✅ Ready to render";
-      } else if (this.currentImageFile && this.currentAudioFile) {
-        serverUploadStatus.textContent = "⏳ Uploading...";
+    // Update image status
+    const imageIcon = document.getElementById("imageStatusIcon");
+    const imageText = document.getElementById("imageStatusText");
+    if (imageIcon && imageText) {
+      if (this.currentImageFile) {
+        imageIcon.textContent = "✅";
+        imageText.textContent = this.currentImageFile.name;
       } else {
-        serverUploadStatus.textContent = "⏳ Not uploaded";
+        imageIcon.textContent = "❌";
+        imageText.textContent = "No image selected";
       }
+    }
+
+    // Update audio status
+    const audioIcon = document.getElementById("audioStatusIcon");
+    const audioText = document.getElementById("audioStatusText");
+    if (audioIcon && audioText) {
+      if (this.currentAudioFile) {
+        audioIcon.textContent = "✅";
+        audioText.textContent = `${
+          this.currentAudioFile.name
+        } (${this.audioDuration.toFixed(1)}s)`;
+      } else {
+        audioIcon.textContent = "❌";
+        audioText.textContent = "No audio selected";
+      }
+    }
+
+    // Update server upload status
+    const uploadIcon = document.getElementById("uploadStatusIcon");
+    const uploadText = document.getElementById("uploadStatusText");
+    if (uploadIcon && uploadText) {
+      if (this.uploadedVideoId) {
+        uploadIcon.textContent = "✅";
+        uploadText.textContent = "Ready to render";
+      } else if (this.currentImageFile && this.currentAudioFile) {
+        uploadIcon.textContent = "⏳";
+        uploadText.textContent = "Uploading...";
+      } else {
+        uploadIcon.textContent = "⏳";
+        uploadText.textContent = "Not uploaded";
+      }
+    }
+  }
+
+  /**
+   * Update video status indicator
+   */
+  updateVideoStatus() {
+    const videoStatus = document.getElementById("videoStatus");
+    const videoFileName = document.getElementById("videoFileName");
+    const videoDetails = document.getElementById("videoDetails");
+
+    if (this.currentVideoFile && videoStatus && videoFileName && videoDetails) {
+      videoStatus.style.display = "flex";
+      videoFileName.textContent = this.currentVideoFile.name;
+
+      if (this.uploadedVideoId) {
+        videoDetails.textContent = "Uploaded and ready for processing";
+      } else {
+        videoDetails.textContent = "Uploading to server...";
+      }
+    } else if (videoStatus) {
+      videoStatus.style.display = "none";
     }
   }
 
@@ -726,6 +778,7 @@ class KaraokeApp {
 
       this.video.oncanplay = () => {
         console.log("Video ready to play");
+        this.updateVideoStatus();
       };
 
       // Upload to server if available
@@ -737,6 +790,7 @@ class KaraokeApp {
           this.uploadedVideoId = uploadResult.videoId;
           console.log("Video uploaded to server:", uploadResult);
           this.showStatus("Video uploaded to server successfully", "success");
+          this.updateVideoStatus();
         } catch (error) {
           console.error("Failed to upload video to server:", error);
           this.uploadedVideoId = null;
